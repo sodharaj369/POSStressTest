@@ -14,7 +14,7 @@ function log(level, msg) {
   const levelUpper = level.toUpperCase();
 
   if (isRapid) {
-    const allowed = ['CYCLE', 'OPM', 'SUCCESS', 'ERROR', 'FATAL', 'SETUP', 'DASHBOARD', 'REPORT', 'RECOVERY', 'RELAUNCH', 'POPUP', 'SCREENSHOT', 'SCREENSHOT_ERROR', 'CLEANUP'];
+    const allowed = ['CYCLE', 'OPM', 'SUCCESS', 'ERROR', 'FATAL', 'SETUP', 'DASHBOARD', 'REPORT', 'RECOVERY', 'RELAUNCH', 'LOGIN', 'POPUP', 'SCREENSHOT', 'SCREENSHOT_ERROR', 'CLEANUP'];
     if (!allowed.includes(levelUpper)) {
       // Still write to log file, but skip console.log
       const timestamp = new Date().toISOString();

@@ -9,6 +9,8 @@ const config = require('../../../config.json');
 const locators = require('../../../locators.json');
 const BasePage = require('../../../pages/BasePage');
 const DashboardPage = require('../../../pages/DashboardPage');
+const LoginPage = require('../../../pages/LoginPage');
+const OnboardingPage = require('../../../pages/OnboardingPage');
 const HierarchyPage = require('../../../pages/HierarchyPage');
 const POSPage = require('../../../pages/POSPage');
 const CheckoutPage = require('../../../pages/CheckoutPage');
@@ -178,7 +180,17 @@ async function waitForKnownState(driver, timeoutMs = 30000) {
   const start = Date.now();
   let lastState = 'unknown';
 
+  // Once per call, not per loop pass. No-op when onboarding is already completed.
+  try {
+    await OnboardingPage.handleIfRequired(driver);
+  } catch (e) {
+    log('WARN', `Onboarding handler error: ${e.message}`);
+  }
+
   while ((Date.now() - start) < timeoutMs) {
+    // PIN login (no-op when authenticated). Throws on failure so it is not reported as unknown state.
+    await LoginPage.loginIfRequired(driver);
+
     try {
       await handleGlobalPopups(driver);
       await BasePage.checkForAlertsAndDismiss(driver);

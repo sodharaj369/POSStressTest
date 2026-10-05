@@ -49,6 +49,8 @@ const { startLiveDashboard } = require('./utils/liveDashboard');
 // Page Objects
 const BasePage = require('./pages/BasePage');
 const DashboardPage = require('./pages/DashboardPage');
+const LoginPage = require('./pages/LoginPage');
+const OnboardingPage = require('./pages/OnboardingPage');
 const HierarchyPage = require('./pages/HierarchyPage');
 const POSPage = require('./pages/POSPage');
 const CheckoutPage = require('./pages/CheckoutPage');
@@ -291,6 +293,17 @@ async function setupAndEnterPOS(driver, unknownRecoveryAttempt = 0) {
     } catch (err) {
         log("WARN", `Global popup handler error before state detection: ${err.message}`);
     }
+
+    // First-launch onboarding (no-op when already completed). Must run before PIN login.
+    try {
+        await OnboardingPage.handleIfRequired(driver);
+    } catch (err) {
+        log("WARN", `Onboarding handler error: ${err.message}`);
+    }
+
+    // PIN login (no-op when already authenticated). Must run before alert dismissal and state detection.
+    // Failures throw on purpose so they are not mistaken for an unknown state.
+    await LoginPage.loginIfRequired(driver);
 
     // Proactively clear any network failure or server error alerts
     try {

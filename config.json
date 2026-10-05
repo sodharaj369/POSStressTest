@@ -38,6 +38,16 @@
     "smallPauseMs": 500,
     "appSettleMs": 5000
   },
+  "authentication": {
+    "enabled": true,
+    "pin": "123456",
+    "postLoginTimeoutMs": 5000
+  },
+  "onboarding": {
+    "enabled": true,
+    "qrCode": "1125e0b8-12fd-485d-82b4-96b5627b5674",
+    "timeoutMs": 10000
+  },
   "keepAwake": true,
   "connectionMode": "usb",
   "liveDashboardEnabled": true,

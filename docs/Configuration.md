@@ -68,3 +68,22 @@ These are fine-tuning delays injected between page actions to allow visual trans
   - `cleanupOnStartup`: Runs cleanups immediately at startup.
   - `maxDays`: Clear folders older than N days.
   - `maxRunFolders`: Keep at most N run folders.
+---
+
+## 8. Authentication (PIN Login)
+* `authentication`: Group object used by `pages/LoginPage.js`:
+  - `enabled`: `true` to log in automatically when the PIN screen is shown. `false` skips the check entirely.
+  - `pin`: 6-digit PIN for the target environment. Login fails clearly before any tap if it is missing or not exactly 6 digits.
+  - `postLoginTimeoutMs`: Max wait for the PIN screen to close after the 6th digit (default: `5000` ms). Authentication is automatic, so there is no submit step.
+* `POS_PIN` environment variable overrides `authentication.pin`.
+* Security: the PIN is never logged. The value in `config.json` is a test-environment PIN only. Use `POS_PIN` for anything real instead of committing it.
+* When the app is already authenticated, login is a single cheap probe and does nothing.
+
+## 9. First-Launch Onboarding
+* `onboarding`: Group object used by `pages/OnboardingPage.js` (runs before PIN login at startup/recovery):
+  - `enabled`: `false` skips onboarding handling entirely.
+  - `qrCode`: Tenant GUID typed into the manual QR entry box (DEV value). Camera scanning is not automated.
+  - `timeoutMs`: Max wait per onboarding transition (default: `10000` ms).
+  - `allowNotifications`: Optional. `true` allows notifications and grants the app's "Permissions Required" dialog. Default denies/cancels.
+* `POS_QR_CODE` environment variable overrides `onboarding.qrCode`. The value is never logged.
+* Flow: permission prompts → Skip → "Tap to manually enter QR code" → GUID → Save → PIN screen. When onboarding is already complete the handler is a single cheap probe and does nothing.

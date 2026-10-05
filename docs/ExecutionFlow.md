@@ -33,7 +33,7 @@ Before launching the transaction loop, the runner executes a sequence of validat
 ---
 
 ## 2. Startup Setup (`setupAndEnterPOS`)
-Runs a series of UI page objects to handle school dev and left/right hierarchy settings. This ensures the app is loaded to the main POS ordering screen (grid page) prior to the transaction loop. If a crash happens during this phase, it triggers up to 5 startup recovery attempts.
+Runs a series of UI page objects to handle school dev and left/right hierarchy settings. Before state detection it calls `LoginPage.loginIfRequired()`, which enters the configured PIN only if the PIN screen is showing and does nothing otherwise. This ensures the app is loaded to the main POS ordering screen (grid page) prior to the transaction loop. If a crash happens during this phase, it triggers up to 5 startup recovery attempts.
 
 ---
 

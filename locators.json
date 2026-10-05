@@ -19,5 +19,24 @@
   "schoolDev": "FOREST HILL SCHOOL Dev 1",
   "hierarchyRight": "RSDe one",
   "proceedButton": "Proceed",
-  "yesButton": "Yes"
+  "yesButton": "Yes",
+  "login": {
+    "digits": {
+      "zero": "com.parentpay.PointOfService:id/login_pin_zero",
+      "one": "com.parentpay.PointOfService:id/login_pin_one",
+      "two": "com.parentpay.PointOfService:id/login_pin_two",
+      "three": "com.parentpay.PointOfService:id/login_pin_three",
+      "four": "com.parentpay.PointOfService:id/login_pin_four",
+      "five": "com.parentpay.PointOfService:id/login_pin_five",
+      "six": "com.parentpay.PointOfService:id/login_pin_six",
+      "seven": "com.parentpay.PointOfService:id/login_pin_seven",
+      "eight": "com.parentpay.PointOfService:id/login_pin_eight",
+      "nine": "com.parentpay.PointOfService:id/login_pin_nine"
+    },
+    "backspaceText": "<",
+    "pinInputClass": "android.widget.EditText",
+    "errorDialogTitle": "com.parentpay.PointOfService:id/alertTitle",
+    "errorDialogTitleText": "Unhandled exception",
+    "errorDialogOk": "android:id/button2"
+  }
 }
