@@ -480,10 +480,14 @@ class BasePage {
       await driver.saveScreenshot(filepath);
       stability.increment('screenshotsCaptured');
         log("SCREENSHOT", `Saved failure screenshot to: ${filepath}`);
+      BasePage.lastScreenshotPath = filepath;
+      return filepath;
     } catch (e) {
       log("SCREENSHOT_ERROR", `Failed to save screenshot: ${e.message}`);
     }
   }
 }
+
+BasePage.lastScreenshotPath = '';
 
 module.exports = BasePage;

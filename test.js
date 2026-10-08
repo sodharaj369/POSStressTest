@@ -40,9 +40,9 @@ async function checkAppiumHealth() {
 
 // Utilities
 const { log, initLogger, setEventSink } = require('./utils/logger');
-const { initRunArtifacts } = require('./utils/runArtifacts');
+const { initRunArtifacts, getRunDir, ensureRunSubdir } = require('./utils/runArtifacts');
 const { reconnectAdb, ensureAdbConnected, checkNetworkStatus, getAppMemoryUsage, resetUiAutomator2Server } = driverFactory.getAdbHelpers();
-const { generateCart } = require('./utils/cartGenerator');
+const { generateCart, getCartCandidates } = require('./utils/cartGenerator');
 const perf = require('./utils/perfMetrics');
 const stability = require('./utils/stabilityMetrics');
 const { generateReport } = require('./utils/htmlReport');
@@ -131,6 +131,25 @@ async function restartAppForEnvironment(driver, targetUdid) {
     execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
 }
 
+// BrowserStack sessions used by this run (initial + any recovery rebuilds). All stay in the single run folder.
+const bsSessions = [];
+
+function recordBsSession(sessionId, reason) {
+    if (!sessionId || bsSessions.some((s) => s.sessionId === sessionId)) return;
+    bsSessions.push({
+        sessionId,
+        reason,
+        createdAt: new Date().toISOString(),
+        url: `https://app-automate.browserstack.com/dashboard/v2/sessions/${sessionId}`,
+    });
+    try {
+        const dir = ensureRunSubdir('browserstack');
+        require('fs').writeFileSync(require('path').join(dir, 'sessions.json'), JSON.stringify(bsSessions, null, 2), 'utf8');
+    } catch (e) {
+        log("REPORT_WARNING", `Could not persist BrowserStack session list: ${e.message}`);
+    }
+}
+
 async function createDriverSession(targetUdid, reason = 'startup') {
     const attempts = config.driverInitRetries || 3;
     let lastError;
@@ -142,6 +161,7 @@ async function createDriverSession(targetUdid, reason = 'startup') {
             await driver.getWindowSize();
             if (EXECUTION_ENV === 'browserstack') {
                 log("SETUP", `BrowserStack session ID: ${driver.sessionId}`);
+                recordBsSession(driver.sessionId, reason);
             }
 
             const currentExecutionMode = process.env.EXECUTION_MODE || config.executionMode || 'standard';
@@ -510,11 +530,39 @@ async function main() {
     stability.startRun();
     const executionStart = new Date();
     let runStatus = 'SUCCESS';
+    let noOrderCycles = 0;
+    let noOrderStopReason = null;
     let loopStartTime = null;
     let targetUdid = '';
     let driver;
     let dashboard = null;
     const cycleRows = [];
+    let cycleCtx = { child: '', product: '', restricted: [], skippedChildren: [] };
+    const buildCycleRow = (cycleNo, status, startMs, extra = {}) => {
+        const notes = [];
+        if (cycleCtx.restricted.length) notes.push(`Restricted: ${cycleCtx.restricted.join('; ')}`);
+        if (cycleCtx.skippedChildren.length) notes.push(`Child skipped: ${cycleCtx.skippedChildren.join(', ')}`);
+        const bsSession = bsSessions.length ? bsSessions[bsSessions.length - 1].sessionId : '';
+        return {
+            cycle: cycleNo,
+            status,
+            startTime: new Date(startMs).toISOString(),
+            endTime: new Date().toISOString(),
+            durationMs: Date.now() - startMs,
+            child: cycleCtx.child || '',
+            product: cycleCtx.product || '',
+            order: status === 'PASS' ? 'Placed' : 'Not placed',
+            recovery: 'No',
+            reconnect: 0,
+            failureCategory: '',
+            failureReason: '',
+            errorMessage: '',
+            screenshot: '',
+            sessionId: bsSession,
+            notes: notes.join(' | '),
+            ...extra,
+        };
+    };
     const longRun = createLongRunAnalytics();
     const executionMeta = {
         deviceName: 'Unknown',
@@ -663,11 +711,16 @@ async function main() {
                 performance: perfSummary,
                 stability: stabilitySummary,
                 longRun: longRunSummary,
+                cycleRows,
+                sessions: bsSessions,
+                runDir: getRunDir(),
             });
             log("REPORT", `HTML report generated: ${reportPath}`);
 
             const excelPath = await generateExcelReport({
                 cycleRows,
+                sessions: bsSessions,
+                runInfo: { status: runStatus, startTime: executionStart, endTime: new Date(), metadata: executionMeta, runDir: getRunDir() },
                 summary: {
                     successRate: stabilitySummary.successRate,
                     failureRate: stabilitySummary.failureRate,
@@ -777,7 +830,7 @@ async function main() {
     driver = await createDriverSession(targetUdid, 'initial');
     if (IS_BROWSERSTACK) {
         const bs = driverFactory.describeSession(driver);
-        const bsCfg = require('./utils/browserstackDriver').getEffectiveConfig();
+        const bsCfg = require('./utils/browserstackDriver').getEffectiveConfig('stress');
         executionMeta.deviceName = `${bsCfg.deviceName} (BrowserStack)`;
         executionMeta.androidVersion = bsCfg.platformVersion;
         startupHealth.browserstackSessionId = bs.sessionId;
@@ -894,6 +947,8 @@ async function main() {
         const childrenList = parseConfigList(config.childName || "10Thaprilposfix6");
 
         let cycle = 1;
+        let consecutiveNoOrderCycles = 0;
+        const maxConsecutiveNoOrder = Math.max(1, Number((config.allergenRestriction || {}).maxConsecutiveNoOrderCycles || 3));
         POSPage.lastSelectedChild = null;
 
         const shouldContinue = () => {
@@ -907,6 +962,9 @@ async function main() {
         while (shouldContinue()) {
             const elapsedMins = ((Date.now() - startTime) / 60000).toFixed(1);
             const cycleAttemptStart = Date.now();
+            cycleCtx = { child: '', product: '', restricted: [], skippedChildren: [] };
+            const reconnectsAtStart = Number(stability.getSummaryData().adbReconnects || 0);
+            const screenshotAtStart = BasePage.lastScreenshotPath;
             let watchdogTimerId = null;
             updateDashboardMetrics(cycle);
             if (runMode === "cycles") {
@@ -954,12 +1012,15 @@ async function main() {
                     }
                 }
 
-                // Pick child and product
-                const currentChild = childrenList.length > 0
+                // Pick child order: random first pick (as before), then remaining children as fallbacks.
+                const firstChild = childrenList.length > 0
                     ? childrenList[Math.floor(Math.random() * childrenList.length)]
                     : "10Thaprilposfix6";
+                const childOrder = [firstChild, ...childrenList.filter(c => c !== firstChild).sort(() => Math.random() - 0.5)];
 
-                const cartItems = generateCart(config);
+                const cartCandidates = getCartCandidates(config);
+                let cartItems = null;
+                let noOrderReason = null;
 
                 // Clear popups/alerts
                 try {
@@ -988,28 +1049,57 @@ async function main() {
                     const cycleStart = Date.now();
                     perf.startCycle();
 
-                    const childSelectStart = Date.now();
-                    // Before major navigation: child selection
-                    try {
-                        await handleGlobalPopups(driver);
-                    } catch (e) {}
-                    await POSPage.selectChild(driver, currentChild);
-                    perf.record(perf.PHASES.CHILD_SELECTION, Date.now() - childSelectStart);
+                    // Each child is attempted at most once per cycle; each product at most once per child.
+                    for (let childIdx = 0; childIdx < childOrder.length && !cartItems; childIdx++) {
+                        const currentChild = childOrder[childIdx];
+                        const childSelectStart = Date.now();
+                        // Before major navigation: child selection
+                        try {
+                            await handleGlobalPopups(driver);
+                        } catch (e) {}
+                        await POSPage.selectChild(driver, currentChild);
+                        log("CART", `Child "${currentChild}" selected`);
+                        perf.record(perf.PHASES.CHILD_SELECTION, Date.now() - childSelectStart);
 
-                    const delayAfterChild = executionMode === 'rapid' ? 0 : (config.delayAfterChildMs !== undefined ? config.delayAfterChildMs : 500);
-                    if (delayAfterChild > 0) await driver.pause(delayAfterChild);
+                        const delayAfterChild = executionMode === 'rapid' ? 0 : (config.delayAfterChildMs !== undefined ? config.delayAfterChildMs : 500);
+                        if (delayAfterChild > 0) await driver.pause(delayAfterChild);
 
-                    const productSelectStart = Date.now();
-                    // Before major action: cart build
-                    try {
-                        await handleGlobalPopups(driver);
-                    } catch (e) {}
-                    await POSPage.addProductsToCart(driver, cartItems);
-                    const cartLabel = cartItems.map(i => `${i.name}x${i.qty}`).join(', ');
-                    perf.record(perf.PHASES.CART_BUILD, Date.now() - productSelectStart);
+                        const productSelectStart = Date.now();
+                        // Before major action: cart build
+                        try {
+                            await handleGlobalPopups(driver);
+                        } catch (e) {}
+                        const selection = await POSPage.selectCompatibleCart(driver, currentChild, cartCandidates);
+                        const lastSel = POSPage.lastSelection || {};
+                        if (Array.isArray(lastSel.restricted) && lastSel.restricted.length) {
+                            cycleCtx.restricted.push(...lastSel.restricted.map((p) => `${p} (${currentChild})`));
+                        }
+                        if (!selection) {
+                            cycleCtx.skippedChildren.push(currentChild);
+                            log("CHILD", `Skipping child "${currentChild}" (all candidate products restricted)`);
+                            // Leave the product page so the next child (or next cycle) starts from the child list.
+                            await POSPage.returnToChildSelection(driver);
+                            if (childIdx + 1 < childOrder.length) {
+                                log("CHILD", "Selecting next eligible child");
+                            }
+                            continue;
+                        }
+                        cartItems = selection.cart;
+                        cycleCtx.child = currentChild;
+                        cycleCtx.product = selection.cart.map(i => `${i.name} x${i.qty}`).join(', ');
+                        log("ORDER", "Continuing checkout");
+                        const cartLabel = cartItems.map(i => `${i.name}x${i.qty}`).join(', ');
+                        perf.record(perf.PHASES.CART_BUILD, Date.now() - productSelectStart);
 
-                    const delayAfterProduct = executionMode === 'rapid' ? 0 : (config.delayAfterProductMs !== undefined ? config.delayAfterProductMs : 0);
-                    if (delayAfterProduct > 0) await driver.pause(delayAfterProduct);
+                        const delayAfterProduct = executionMode === 'rapid' ? 0 : (config.delayAfterProductMs !== undefined ? config.delayAfterProductMs : 0);
+                        if (delayAfterProduct > 0) await driver.pause(delayAfterProduct);
+                    }
+
+                    // Expected business outcome: nothing orderable. Not a failure, not retried.
+                    if (!cartItems) {
+                        noOrderReason = `No eligible child/product combination (${childOrder.length} child(ren) tried, all candidate products restricted)`;
+                        return;
+                    }
 
                     const walletClickStart = Date.now();
                     // Before major navigation: select wallet
@@ -1040,14 +1130,33 @@ async function main() {
                 await Promise.race([transactionPromise, watchdogPromise]);
                 clearTimeout(watchdogTimerId);
 
+                if (noOrderReason) {
+                    perf.cancelCycle(); // no order placed: keep out of OPM/duration metrics
+                    consecutiveNoOrderCycles++;
+                    noOrderCycles++;
+                    log("ORDER", `NO_ORDER (not a failure): ${noOrderReason} (${consecutiveNoOrderCycles}/${maxConsecutiveNoOrder} consecutive)`);
+                    addDashboardEvent('ORDER', `Cycle ${cycle} no order possible (all products restricted)`);
+                    cycleRows.push(buildCycleRow(cycle, 'NO_ORDER', cycleAttemptStart, {
+                        order: 'No order',
+                        failureReason: noOrderReason,
+                    }));
+                    cycle++;
+                    updateDashboardMetrics(cycle);
+                    if (consecutiveNoOrderCycles >= maxConsecutiveNoOrder) {
+                        noOrderStopReason = `Stopped after ${consecutiveNoOrderCycles} consecutive NO_ORDER cycles (limit ${maxConsecutiveNoOrder}, allergenRestriction.maxConsecutiveNoOrderCycles). Every configured child/product combination was restricted.`;
+                        log("ORDER", `Stopping run: ${noOrderStopReason}`);
+                        addDashboardEvent('ORDER', 'Run stopped: consecutive NO_ORDER limit reached');
+                        break;
+                    }
+                    continue;
+                }
+                consecutiveNoOrderCycles = 0;
+
                 stability.recordCycleSuccess();
                 longRun.recordCycleDuration(cycle, Date.now() - cycleAttemptStart);
-                cycleRows.push({
-                    cycle,
-                    status: 'PASS',
-                    durationMs: Date.now() - cycleAttemptStart,
-                    recovery: 'No',
-                });
+                cycleRows.push(buildCycleRow(cycle, 'PASS', cycleAttemptStart, {
+                    reconnect: Math.max(0, Number(stability.getSummaryData().adbReconnects || 0) - reconnectsAtStart),
+                }));
                 addDashboardEvent('CYCLE', `Cycle ${cycle} completed successfully`);
                 perf.logRollingOPM(cycle);
                 cycle++;
@@ -1065,6 +1174,19 @@ async function main() {
                 }
 
                 log("ERROR", `Cycle #${cycle} failed: ${cycleError.message}`);
+                const failureCategory = stability.classifyFailureReason(cycleError.message);
+                const failureInfo = {
+                    failureCategory,
+                    failureReason: failureCategory,
+                    errorMessage: String(cycleError.message || '').slice(0, 300),
+                    reconnect: Math.max(0, Number(stability.getSummaryData().adbReconnects || 0) - reconnectsAtStart),
+                    // Evaluated when spread into the row, i.e. after any recovery screenshot was saved.
+                    get screenshot() {
+                        return BasePage.lastScreenshotPath && BasePage.lastScreenshotPath !== screenshotAtStart
+                            ? require('path').basename(BasePage.lastScreenshotPath)
+                            : '';
+                    },
+                };
                 addDashboardEvent('ERROR', `Cycle ${cycle} failed: ${cycleError.message}`);
 
                 const errStr = (cycleError.message || "").toLowerCase();
@@ -1181,12 +1303,10 @@ async function main() {
                         addDashboardEvent('RECOVERY', 'Cycle recovered and resumed');
                     }
                     longRun.recordCycleDuration(cycle, Date.now() - cycleAttemptStart);
-                    cycleRows.push({
-                        cycle,
-                        status: 'FAIL',
-                        durationMs: Date.now() - cycleAttemptStart,
+                    cycleRows.push(buildCycleRow(cycle, 'FAIL', cycleAttemptStart, {
                         recovery: recoveredThisCycle ? 'Yes' : 'No',
-                    });
+                        ...failureInfo,
+                    }));
                     updateDashboardMetrics(cycle);
                 } else {
                     log("RECOVERY", "Attempting to recover in-session and continue to next cycle...");
@@ -1200,21 +1320,24 @@ async function main() {
                     longRun.recordRecovery(cycle);
                     longRun.recordCycleDuration(cycle, Date.now() - cycleAttemptStart);
                     stability.markRecoveredFailure();
-                    cycleRows.push({
-                        cycle,
-                        status: 'FAIL',
-                        durationMs: Date.now() - cycleAttemptStart,
+                    cycleRows.push(buildCycleRow(cycle, 'FAIL', cycleAttemptStart, {
                         recovery: 'Yes',
-                    });
+                        ...failureInfo,
+                    }));
                     updateDashboardMetrics(cycle);
                 }
             }
         }
 
-        log("SUCCESS", `Automation Run Complete! Successfully executed ${cycle - 1} cycles`);
-        runStatus = 'SUCCESS';
+        if (noOrderStopReason) {
+            log("WARN", `Run ended early (not a failure, not a full success): ${noOrderStopReason}`);
+            runStatus = 'STOPPED_NO_ORDER';
+        } else {
+            log("SUCCESS", `Automation Run Complete! Successfully executed ${cycle - 1} cycles`);
+            runStatus = 'SUCCESS';
+        }
         perf.printSummary();
-        stability.printSummary('SUCCESS');
+        stability.printSummary(runStatus);
         longRun.printSummary(stability.getSummaryData());
         addDashboardEvent('SUCCESS', `Run complete. Executed ${cycle - 1} cycles`);
         runFinished = true;
@@ -1251,15 +1374,23 @@ async function main() {
                 performance: perfSummary,
                 stability: stabilitySummary,
                 longRun: longRunSummary,
+                noOrder: { cycles: noOrderCycles, stopReason: noOrderStopReason },
+                cycleRows,
+                sessions: bsSessions,
+                runDir: getRunDir(),
             });
             log("REPORT", `HTML report generated: ${reportPath}`);
 
             const excelPath = await generateExcelReport({
                 cycleRows,
+                sessions: bsSessions,
+                runInfo: { status: runStatus, startTime: executionStart, endTime: new Date(), metadata: executionMeta, runDir: getRunDir() },
                 summary: {
                     successRate: stabilitySummary.successRate,
                     failureRate: stabilitySummary.failureRate,
                     attempts: stabilitySummary.attempts,
+                    noOrderCycles,
+                    noOrderStopReason,
                     cyclesCompleted: stabilitySummary.cyclesCompleted,
                     cyclesFailed: stabilitySummary.cyclesFailed,
                     ordersPerMinute: perfSummary.ordersPerMinute,
@@ -1293,9 +1424,12 @@ async function main() {
                     performance: perfSummary,
                     stability: stabilitySummary,
                     longRun: longRunSummary,
-                    cycles: cycleRows
+                    cycles: cycleRows,
+                    noOrder: { cycles: noOrderCycles, stopReason: noOrderStopReason }
                 };
                 fs.writeFileSync(path.join(__dirname, 'logs', `latest_summary_${executionMode}.json`), JSON.stringify(summaryPayload, null, 2), 'utf8');
+                // Per-run copy: the global latest_summary file is only a pointer for benchmark.js.
+                fs.writeFileSync(path.join(getRunDir(), 'summary.json'), JSON.stringify(summaryPayload, null, 2), 'utf8');
             } catch (err) {
                 log("REPORT_WARNING", `Failed to save benchmark summary JSON: ${err.message}`);
             }

@@ -15,7 +15,7 @@ function formatRunStamp(date = new Date()) {
 }
 
 function parseRunStamp(name) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/.exec(name);
+  const m = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:-\d+)?$/.exec(name);
   if (!m) return null;
 
   const year = Number(m[1]);
@@ -98,10 +98,35 @@ function initRunArtifacts(baseDir) {
 
   pruneOldRunFolders(rootDir);
 
-  const runDir = path.join(rootDir, formatRunStamp(new Date()));
-  fs.mkdirSync(runDir, { recursive: true });
+  // Each invocation owns a brand-new folder. mkdirSync without `recursive` fails if the folder
+  // already exists, so two runs started in the same second can never share (or overwrite) a folder.
+  const baseName = formatRunStamp(new Date());
+  let runDir = '';
+  for (let n = 1; n <= 100 && !runDir; n++) {
+    const candidate = path.join(rootDir, n === 1 ? baseName : `${baseName}-${n}`);
+    try {
+      fs.mkdirSync(candidate);
+      runDir = candidate;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+  }
+  if (!runDir) {
+    throw new Error(`Could not allocate a unique run folder under ${rootDir}`);
+  }
   currentRunDir = runDir;
   return runDir;
+}
+
+// Creates (once) a named sub-folder inside the CURRENT run folder, e.g. "browserstack".
+function ensureRunSubdir(name) {
+  const dir = path.join(getRunDir(), name);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function isRunDirInitialized() {
+  return Boolean(currentRunDir);
 }
 
 function getRunDir() {
@@ -119,4 +144,6 @@ module.exports = {
   initRunArtifacts,
   getRunDir,
   resolveRunPath,
+  ensureRunSubdir,
+  isRunDirInitialized,
 };

@@ -15,6 +15,10 @@
   "rapidDelayBetweenQuantityClicksMs": 200,
   "childName": "10THaprilposfix1,10THaprilposfix2",
   "productName": "FEED Snack Station - 0,test for demo - 1",
+  "allergenRestriction": {
+    "toastKeywords": ["allergen restrictions"],
+    "maxConsecutiveNoOrderCycles": 3
+  },
   "delayAfterChildMs": 0,
   "delayAfterProductMs": 0,
   "delayAfterWalletMs": 20,

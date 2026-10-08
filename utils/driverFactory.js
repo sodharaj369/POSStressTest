@@ -24,7 +24,7 @@ function isBrowserstack() {
 async function createDriver(env, localRemoteOptions) {
   if (env === BROWSERSTACK) {
     const { buildBrowserstackRemoteOptions } = require('./browserstackDriver');
-    return remote(buildBrowserstackRemoteOptions('stress'));
+    return remote(buildBrowserstackRemoteOptions('stress', 'stress'));
   }
   return remote(localRemoteOptions);
 }

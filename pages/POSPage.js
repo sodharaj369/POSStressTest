@@ -16,6 +16,8 @@ const _state = {
 
 class POSPage {
   static lastSelectedChild = null;
+  // Outcome of the most recent selectCompatibleCart call (report/diagnostics only).
+  static lastSelection = null;
   static _productCache = new Map();
 
   static _isFatalDriverError(err) {
@@ -547,6 +549,195 @@ class POSPage {
     );
   }
 
+  // ─── Allergen restriction handling ──────────────────────────────────────────
+  // A restricted product is an EXPECTED business outcome, not an automation failure.
+
+  // Toast text confirmed on a real device: "Product is unavailable due to allergen restrictions".
+  // Keywords come only from config.allergenRestriction.toastKeywords.
+  static _allergenToastKeywords() {
+    const kw = config.allergenRestriction && config.allergenRestriction.toastKeywords;
+    return Array.isArray(kw) ? kw.map(k => String(k).toLowerCase()).filter(k => k.length > 0) : [];
+  }
+
+  // Poll window for the restriction toast after a product click. The app shows it immediately,
+  // so the first poll normally catches it; the window only bounds the "no toast" case.
+  static ALLERGEN_TOAST_WAIT_MS = 3000;
+  static ALLERGEN_TOAST_POLL_MS = 100;
+
+  static async _toastTexts(driver) {
+    const texts = [];
+    try {
+      const toasts = await driver.$$('//android.widget.Toast');
+      for (const t of toasts) {
+        const text = (await t.getText().catch(() => '')) || '';
+        if (text) texts.push(text);
+      }
+    } catch (e) {
+      if (this._isFatalDriverError(e)) throw e;
+    }
+    return texts;
+  }
+
+  /**
+   * Primary allergen signal. Polls (bounded) for a toast matching a configured keyword after a
+   * product click. Returns the toast text when restricted, otherwise null.
+   * Disabled when no keywords are configured. When the cart was empty before the click, an
+   * enabled Select Wallet means the product was added, so polling stops early.
+   */
+  static async _waitForAllergenToast(driver, productName, cartWasEmpty) {
+    const keywords = this._allergenToastKeywords();
+    if (keywords.length === 0) return null;
+
+    const seen = new Set();
+    const deadline = Date.now() + POSPage.ALLERGEN_TOAST_WAIT_MS;
+    while (true) {
+      for (const text of await this._toastTexts(driver)) {
+        if (!seen.has(text)) {
+          seen.add(text);
+          log("TOAST", `Observed toast after clicking "${productName}": "${text}"`);
+        }
+        if (keywords.some(k => text.toLowerCase().includes(k))) return text;
+      }
+      if (cartWasEmpty && await this._isSelectWalletReady(driver)) return null;
+      if (Date.now() >= deadline) return null;
+      await driver.pause(POSPage.ALLERGEN_TOAST_POLL_MS);
+    }
+  }
+
+  static async _isSelectWalletReady(driver) {
+    try {
+      const matches = await driver.$$(`android=new UiSelector().text("${locators.selectWalletButton}")`);
+      return matches.length > 0 && await matches[0].isDisplayed().catch(() => false) && await matches[0].isEnabled();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** Waits (bounded) for the previous toast to disappear so it is not mistaken for the next product's. */
+  static async _waitToastGone(driver, timeoutMs = 5000) {
+    await driver.waitUntil(async () => (await this._toastTexts(driver)).length === 0,
+      { timeout: timeoutMs, interval: 150 }).catch(() => {});
+  }
+
+  /**
+   * After a restricted child is skipped we are on the product page, which has no Name button
+   * and no child list. Return to the child list WITHOUT paying so selectChild can pick the next
+   * child. Uses a single Android Back press (bounded, condition-driven wait). If the child list
+   * does not appear, throw so the existing cycle recovery (setupAndEnterPOS) takes over.
+   */
+  static async returnToChildSelection(driver) {
+    const closeSel = `android=new UiSelector().text("${locators.closeButton}")`;
+    const nameSel  = `android=new UiSelector().text("${locators.nameButton}")`;
+    const onChildList = async () => {
+      for (const sel of [closeSel, nameSel]) {
+        const els = await driver.$$(sel);
+        if (els.length > 0 && await els[0].isDisplayed().catch(() => false)) return true;
+      }
+      return false;
+    };
+
+    if (await onChildList()) {
+      log("CHILD", "Already on child selection screen");
+      return;
+    }
+
+    log("CHILD", "Returning to child selection (Back from product page)...");
+    try { await BasePage.checkForAlertsAndDismiss(driver); } catch (e) {}
+    await driver.back();
+
+    const reached = await driver.waitUntil(onChildList, { timeout: 5000, interval: 100 }).then(() => true).catch(() => false);
+    if (!reached) {
+      try { await BasePage.checkForAlertsAndDismiss(driver); } catch (e) {}
+      if (await onChildList()) {
+        log("CHILD", "Child selection screen reached after dismissing popup");
+        return;
+      }
+      await BasePage.saveFailureScreenshot(driver, 'child_nav_after_restriction_failed');
+      throw new Error('Could not return to child selection after skipping restricted child (Back did not reach child list)');
+    }
+    log("CHILD", "Child selection screen reached");
+  }
+
+  /**
+   * Non-clicking probe. Returns 'SELECTABLE' | 'RESTRICTED' | 'UNKNOWN'.
+   * UNKNOWN = tile not visible yet; normal search/scroll path decides later.
+   */
+  static async probeProduct(driver, name) {
+    try {
+      let matches = await driver.$$(`android=new UiSelector().text("${name}")`);
+      if (matches.length === 0 || !(await matches[0].isDisplayed().catch(() => false))) {
+        matches = await driver.$$(`android=new UiSelector().textContains("${name}")`);
+      }
+      if (matches.length > 0 && await matches[0].isDisplayed().catch(() => false)) {
+        return (await matches[0].isEnabled()) ? 'SELECTABLE' : 'RESTRICTED';
+      }
+    } catch (e) {
+      if (this._isFatalDriverError(e)) throw e;
+    }
+    return 'UNKNOWN';
+  }
+
+  /**
+   * Tries candidate carts for the current child, each product at most once.
+   * Returns { cart, restricted } when a cart was actually built (Select Wallet is ready),
+   * or null when every candidate is restricted. Other errors propagate unchanged.
+   */
+  static async selectCompatibleCart(driver, childName, candidates) {
+    const restricted = new Set();
+    let toastConfirmed = 0;
+    let firstTry = true;
+
+    for (const candidate of candidates) {
+      const cart = [];
+      for (const item of candidate) {
+        if (restricted.has(item.name)) {
+          log("PRODUCT", `"${item.name}" already restricted for child "${childName}", not retrying`);
+          continue;
+        }
+        log("PRODUCT", firstTry ? `Trying "${item.name}"` : `Trying next candidate "${item.name}"`);
+        firstTry = false;
+        // isEnabled() is unreliable on this app (greyed tiles report enabled), so a disabled tile is
+        // only a hint to skip the click. Restriction is confirmed by the toast after clicking.
+        const state = await this.probeProduct(driver, item.name);
+        if (state === 'RESTRICTED') {
+          restricted.add(item.name);
+          log("PRODUCT", `"${item.name}" tile is disabled, skipping click`);
+          continue;
+        }
+        log("PRODUCT", state === 'SELECTABLE'
+          ? `"${item.name}" found and selectable`
+          : `"${item.name}" not visible yet, using normal search`);
+        cart.push(item);
+      }
+
+      if (cart.length === 0) continue;
+
+      try {
+        await this.addProductsToCart(driver, cart);
+        log("PRODUCT", "Click successful");
+        POSPage.lastSelection = { child: childName, restricted: [...restricted], selected: cart.map(i => i.name) };
+        return { cart, restricted: [...restricted] };
+      } catch (err) {
+        if (err && err.code === 'ALLERGEN_RESTRICTED') {
+          restricted.add(err.product);
+          toastConfirmed++;
+          log("ALLERGEN", `"${err.product}" restricted for current child "${childName}"`);
+          await this._waitToastGone(driver);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (toastConfirmed > 0) {
+      log("ALLERGEN", `No compatible products for child "${childName}"`);
+    } else {
+      log("PRODUCT", `No selectable products for child "${childName}" (tiles disabled or not found)`);
+    }
+    POSPage.lastSelection = { child: childName, restricted: [...restricted], selected: [] };
+    return null;
+  }
+
   /**
    * Adds one or more products to the cart with configurable quantities.
    * Accepts normalized format: [{ name: string, qty: number }]
@@ -713,6 +904,18 @@ class POSPage {
           } catch (retryErr) {
             await BasePage.saveFailureScreenshot(driver, `product_click_fail_${name.replace(/\s+/g, '_')}_${click}`);
             throw new Error(`Failed to click product "${name}" (click ${click}/${qty}): ${retryErr.message}`);
+          }
+        }
+
+        // Allergen toast after the first click = expected restriction (primary signal), not a failure.
+        // Thrown before the Select Wallet wait, so no generic failure/recovery is triggered.
+        if (click === 1) {
+          const toastText = await POSPage._waitForAllergenToast(driver, name, itemIdx === 0);
+          if (toastText) {
+            const restrictedErr = new Error(`Allergen restriction for "${name}"`);
+            restrictedErr.code = 'ALLERGEN_RESTRICTED';
+            restrictedErr.product = name;
+            throw restrictedErr;
           }
         }
 

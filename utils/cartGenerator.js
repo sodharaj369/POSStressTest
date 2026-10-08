@@ -102,6 +102,40 @@ function generateCart(config) {
   return cart;
 }
 
+/**
+ * getCartCandidates(config) → [cart, cart, ...]
+ * Ordered, de-duplicated list of carts to try for ONE child.
+ * First entry is exactly what generateCart() picks (normal flow unchanged).
+ * Extra entries are single-product fallbacks from the configured pool, used only
+ * when earlier candidates are allergen-restricted. Explicit cart (MODE D) has no fallbacks.
+ */
+function getCartCandidates(config) {
+  const first = generateCart(config);
+  const candidates = [first];
+
+  if (config.cartProducts && Array.isArray(config.cartProducts) && config.cartProducts.length > 0) {
+    return candidates;
+  }
+
+  let pool;
+  if (config.products && Array.isArray(config.products) && config.products.length > 0) {
+    pool = config.products.map(p => (typeof p === 'string' ? { name: p, qty: 1 } : p));
+  } else {
+    pool = (config.productName || 'test for')
+      .split(',').map(s => s.trim()).filter(s => s.length > 0)
+      .map(name => ({ name, qty: 1 }));
+  }
+
+  const used = new Set(first.map(i => i.name));
+  const rest = pool.filter(p => !used.has(p.name)).sort(() => Math.random() - 0.5);
+  for (const p of rest) {
+    if (used.has(p.name)) continue;
+    used.add(p.name);
+    candidates.push([{ name: p.name, qty: resolveQty(p.qty) }]);
+  }
+  return candidates;
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -148,4 +182,4 @@ function _logCart(mode, cart) {
   }
 }
 
-module.exports = { generateCart };
+module.exports = { generateCart, getCartCandidates };

@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getRunDir } = require('./runArtifacts');
+const { getRunDir, isRunDirInitialized } = require('./runArtifacts');
 
 function pad(v) {
   return String(v).padStart(2, '0');
@@ -63,7 +63,7 @@ function classifyRunHealth({ status, stability, longRun, startupHealth }) {
   const adbConnected = startupHealth?.adbConnected;
   const slowdownDetected = Boolean(longRun?.slowdown?.detected);
 
-  const hasSystemFailures = status !== 'SUCCESS' || fatalFailures > 0 || successRate < 98 || appiumReady === false || adbConnected === false;
+  const hasSystemFailures = (status !== 'SUCCESS' && status !== 'STOPPED_NO_ORDER') || fatalFailures > 0 || successRate < 98 || appiumReady === false || adbConnected === false;
 
   if (hasSystemFailures || memHealth.status === 'High Risk of Memory Leak') {
     const reasons = [];
@@ -174,7 +174,7 @@ function buildRecentCyclesTable(cycleRows) {
   const recent = cycleRows.slice(-10).reverse();
   const rows = recent.map((r) => {
     const statusText = String(r.status || 'UNKNOWN').toUpperCase();
-    const statusCls = statusText === 'PASS' ? 'pass' : 'fail';
+    const statusCls = statusText === 'PASS' ? 'pass' : (statusText === 'NO_ORDER' ? 'neutral' : 'fail');
     const recoveryYes = String(r.recovery || '').toLowerCase() === 'yes';
     return `<tr>
       <td>${esc(r.cycle)}</td>
@@ -192,9 +192,88 @@ function buildRecentCyclesTable(cycleRows) {
   </table>`;
 }
 
+function rateText(stability, key) {
+  const orders = Number(stability.cyclesCompleted || 0);
+  const failed = Number(stability.cyclesFailed || 0);
+  if (orders === 0 && failed === 0) return 'N/A (no orders yet)';
+  return stability[key] || 'N/A';
+}
+
+function buildCycleDetailsTable(cycleRows) {
+  if (!Array.isArray(cycleRows) || cycleRows.length === 0) {
+    return '<p class="muted">No cycle-level rows captured for this run.</p>';
+  }
+  const time = (v) => (v ? String(v).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '-');
+  const rows = cycleRows.map((r) => {
+    const statusText = String(r.status || 'UNKNOWN').toUpperCase();
+    const statusCls = statusText === 'PASS' ? 'pass' : (statusText === 'NO_ORDER' ? 'neutral' : 'fail');
+    const recoveryYes = String(r.recovery || '').toLowerCase() === 'yes';
+    const shot = r.screenshot ? `<a href="${esc(encodeURI(r.screenshot))}">${esc(r.screenshot)}</a>` : '-';
+    const reason = [r.failureCategory, r.errorMessage].filter(Boolean).join(': ') || r.failureReason || '-';
+    return `<tr>
+      <td>${esc(r.cycle)}</td>
+      <td class="${statusCls}">${esc(statusText)}</td>
+      <td>${esc(time(r.startTime))}</td>
+      <td>${esc(time(r.endTime))}</td>
+      <td>${esc(`${r.durationMs} ms`)}</td>
+      <td>${esc(r.child || '-')}</td>
+      <td>${esc(r.product || '-')}</td>
+      <td>${esc(r.order || '-')}</td>
+      <td class="${recoveryYes ? 'recovery' : ''}">${esc(r.recovery || 'No')}</td>
+      <td>${esc(r.reconnect != null ? r.reconnect : 0)}</td>
+      <td>${esc(statusText === 'PASS' ? '-' : reason)}</td>
+      <td>${shot}</td>
+      <td>${esc(r.notes || '-')}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div style="overflow-x:auto"><table>
+    <thead>
+      <tr><th>Cycle</th><th>Status</th><th>Start</th><th>End</th><th>Duration</th><th>Child</th><th>Product</th><th>Order</th><th>Recovery</th><th>Reconnect</th><th>Failure Reason</th><th>Screenshot</th><th>Notes</th></tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function buildSessionsSection(sessions) {
+  if (!Array.isArray(sessions) || sessions.length === 0) return '';
+  const rows = sessions.map((s, i) => `<tr>
+      <td>${i + 1}</td>
+      <td><a href="${esc(s.url)}">${esc(s.sessionId)}</a></td>
+      <td>${esc(s.reason || '-')}</td>
+      <td>${esc(s.createdAt || '-')}</td>
+    </tr>`).join('');
+  return `<section class="card">
+        <h2>BrowserStack Sessions (${sessions.length})</h2>
+        <table>
+          <thead><tr><th>#</th><th>Session ID</th><th>Reason</th><th>Created</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>`;
+}
+
+function buildFailuresSection(cycleRows) {
+  const failed = (cycleRows || []).filter((r) => String(r.status).toUpperCase() === 'FAIL');
+  if (failed.length === 0) return '';
+  const rows = failed.map((r) => `<tr>
+      <td>${esc(r.cycle)}</td>
+      <td>${esc(r.failureCategory || 'Unclassified')}</td>
+      <td>${esc(r.errorMessage || r.failureReason || '-')}</td>
+      <td>${r.screenshot ? `<a href="${esc(encodeURI(r.screenshot))}">${esc(r.screenshot)}</a>` : '-'}</td>
+      <td>${esc(r.sessionId || '-')}</td>
+    </tr>`).join('');
+  return `<section class="card" style="grid-column:1/-1">
+        <h2>Failures / Diagnostics</h2>
+        <table>
+          <thead><tr><th>Cycle</th><th>Category</th><th>Error</th><th>Screenshot</th><th>Session</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>`;
+}
+
 function buildHtml(payload) {
   const {
-    status,
+    status: rawStatus,
     startTime,
     endTime,
     metadata,
@@ -203,7 +282,12 @@ function buildHtml(payload) {
     stability,
     longRun,
     cycleRows,
+    noOrder,
+    sessions,
   } = payload;
+  const status = rawStatus === 'SUCCESS' && Number(stability.cyclesFailed || 0) > 0 ? 'PARTIAL' : rawStatus;
+  const noOrderCycles = Number((noOrder && noOrder.cycles) || 0);
+  const noOrderStopReason = (noOrder && noOrder.stopReason) || null;
 
   const bottlenecks = (performance.bottlenecks || [])
     .map((b) => `<li>${esc(b.label)} - ${esc(`${b.ms} ms`)}</li>`)
@@ -214,7 +298,7 @@ function buildHtml(payload) {
     ? failureReasons.map(([k, v]) => row(k, v)).join('')
     : row('No failures recorded', '-');
 
-  const statusClass = status === 'SUCCESS' ? 'pass' : 'fail';
+  const statusClass = status === 'SUCCESS' ? 'pass' : ((status === 'STOPPED_NO_ORDER' || status === 'PARTIAL') ? 'neutral' : 'fail');
   const recoveryClass = (stability.recoveredFailures || 0) > 0 ? 'recovery' : '';
   const longRunData = longRun || {};
   const slowdown = longRunData.slowdown || {};
@@ -225,19 +309,27 @@ function buildHtml(payload) {
   const isBs = startup.executionEnv === 'browserstack';
   const { assessMemoryHealth } = require('./longRunAnalytics');
   const memHealth = assessMemoryHealth(memoryLeak, slowdown, stability);
-  const runHealth = classifyRunHealth({ status, stability, longRun: longRunData, startupHealth: startup });
+  const runHealth = classifyRunHealth({ status: rawStatus, stability, longRun: longRunData, startupHealth: startup });
   const recommendations = buildRecommendations({ performance, longRun: longRunData, stability });
   const successRateNum = toNumberPercent(stability.successRate || '0%');
   const failureRateNum = toNumberPercent(stability.failureRate || '0%');
   const attempts = Number(stability.attempts || 0);
-  const recentCyclesTable = buildRecentCyclesTable(cycleRows);
+  const recentCyclesTable = buildCycleDetailsTable(cycleRows);
+  const sessionsSection = isBs ? buildSessionsSection(sessions) : '';
+  const failuresSection = buildFailuresSection(cycleRows);
+  const executionLabel = isBs ? 'BrowserStack' : 'Local Device';
+  const watchdogEvents = Object.entries(stability.failureReasons || {})
+    .filter(([k]) => /watchdog/i.test(k))
+    .reduce((n, [, v]) => n + Number(v || 0), 0);
+  const cyclesRequested = startup.runMode === 'cycles' && startup.maxCycles != null ? startup.maxCycles : 'N/A (duration mode)';
+  const durationRequested = startup.runMode === 'cycles' ? 'N/A (cycle mode)' : (startup.durationMins != null ? `${startup.durationMins} mins` : 'N/A');
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ParentPay POS Automation Report</title>
+  <title>ParentPay POS Stress Test - ${esc(executionLabel)}</title>
   <style>
     :root {
       --bg: #f4f6f8;
@@ -277,6 +369,7 @@ function buildHtml(payload) {
     }
     .pass { color: var(--pass); font-weight: 700; }
     .fail { color: var(--fail); font-weight: 700; }
+    .neutral { color: #6b7280; font-weight: 700; }
     .recovery { color: var(--recovery); font-weight: 700; }
     .muted { color: var(--muted); }
     .kpis {
@@ -376,7 +469,8 @@ function buildHtml(payload) {
 <body>
   <div class="wrap">
     <div class="header">
-      <h1 style="margin:0 0 6px; font-size:22px;">ParentPay POS Automation Report</h1>
+      <h1 style="margin:0 0 6px; font-size:22px;">ParentPay POS Stress Test</h1>
+      <div style="margin-bottom:6px;">Execution: <strong>${esc(executionLabel)}</strong> &middot; Start: ${esc(formatDateTime(startTime))} &middot; End: ${esc(formatDateTime(endTime))} &middot; Duration: ${esc(formatDuration(new Date(endTime) - new Date(startTime)))}</div>
       <div class="pill ${statusClass}">Status: ${esc(status)}</div>
     </div>
 
@@ -387,7 +481,7 @@ function buildHtml(payload) {
       </div>
       <div class="kpi">
         <div class="label">Success Rate</div>
-        <div class="value pass">${esc(stability.successRate || '0.0%')}</div>
+        <div class="value pass">${esc(rateText(stability, 'successRate'))}</div>
       </div>
       <div class="kpi">
         <div class="label">Cycles</div>
@@ -405,11 +499,37 @@ function buildHtml(payload) {
 
     <div class="grid">
       <section class="card">
+        <h2>Stress Run Overview</h2>
+        <table>
+          ${row('Execution', executionLabel)}
+          ${row('Status', status, statusClass)}
+          ${row('Run Mode', startup.runMode || 'Unknown')}
+          ${row('Cycles Requested', cyclesRequested)}
+          ${row('Duration Requested', durationRequested)}
+          ${row('Cycles Completed', stability.cyclesCompleted || 0)}
+          ${row('Successful Orders', stability.cyclesCompleted || 0)}
+          ${row('Failed Orders', stability.cyclesFailed || 0, (stability.cyclesFailed || 0) > 0 ? 'fail' : '')}
+          ${row('NO_ORDER Cycles', noOrderCycles, noOrderCycles > 0 ? 'neutral' : '')}
+          ${row('Success Rate', rateText(stability, 'successRate'))}
+          ${row('Failure Rate', rateText(stability, 'failureRate'))}
+          ${row('Orders / Minute', performance.ordersPerMinute || 'N/A')}
+          ${row('Recoveries', stability.recoveredFailures || 0)}
+          ${row('Reconnects', stability.adbReconnects || 0)}
+          ${row('Watchdog Events', watchdogEvents)}
+          ${row('Total Execution Time', formatDuration(new Date(endTime) - new Date(startTime)))}
+          ${isBs ? row('Run Folder', payload.runDir ? path.basename(payload.runDir) : 'Unknown') : ''}
+        </table>
+      </section>
+
+      ${sessionsSection}
+      <section class="card">
         <h2>Run Health Verdict</h2>
         <table>
           ${row('Verdict', runHealth.verdict, runHealth.cls)}
           ${row('Run Status', status, statusClass)}
           ${row('Total Attempts', attempts || 0)}
+          ${row('No-Order Cycles (not failures)', noOrderCycles, noOrderCycles > 0 ? 'neutral' : '')}
+          ${noOrderStopReason ? row('Stop Reason', noOrderStopReason, 'neutral') : ''}
           ${row('Fatal Failures', stability.fatalFailures || 0, (stability.fatalFailures || 0) > 0 ? 'fail' : 'pass')}
         </table>
         <div style="margin-top:8px; font-size:14px;">
@@ -480,8 +600,8 @@ function buildHtml(payload) {
         <table>
           ${row('Cycles Completed', stability.cyclesCompleted || 0)}
           ${row('Cycles Failed', stability.cyclesFailed || 0)}
-          ${row('Success Rate', stability.successRate || '0.0%', 'pass')}
-          ${row('Failure Rate', stability.failureRate || '0.0%', (stability.cyclesFailed || 0) > 0 ? 'fail' : '')}
+          ${row('Success Rate', rateText(stability, 'successRate'), 'pass')}
+          ${row('Failure Rate', rateText(stability, 'failureRate'), (stability.cyclesFailed || 0) > 0 ? 'fail' : '')}
           ${row('Recovery Rate', stability.recoveryRate || '0.0%', recoveryClass)}
           ${row('Popup Recoveries', stability.popupRecoveries || 0, (stability.popupRecoveries || 0) > 0 ? 'recovery' : '')}
           ${row('ADB Reconnects', stability.adbReconnects || 0, (stability.adbReconnects || 0) > 0 ? 'recovery' : '')}
@@ -537,10 +657,11 @@ function buildHtml(payload) {
         <ul>${recommendations.map((tip) => `<li>${esc(tip)}</li>`).join('')}</ul>
       </section>
 
-      <section class="card">
-        <h2>Recent Cycle Outcomes</h2>
+      <section class="card" style="grid-column:1/-1">
+        <h2>Cycle Details</h2>
         ${recentCyclesTable}
       </section>
+      ${failuresSection}
     </div>
 
     <div class="footer">Generated by ParentPay POS Automation Framework</div>
@@ -550,6 +671,9 @@ function buildHtml(payload) {
 }
 
 function generateReport(payload) {
+  if (!isRunDirInitialized()) {
+    throw new Error('Run folder not initialised (initRunArtifacts must run first); refusing to write report to a shared path.');
+  }
   const runDir = getRunDir();
   if (!fs.existsSync(runDir)) {
     fs.mkdirSync(runDir, { recursive: true });

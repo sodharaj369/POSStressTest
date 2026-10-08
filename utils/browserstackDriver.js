@@ -23,15 +23,49 @@ function envPositiveInt(name, fallback) {
   return value;
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// Fixed once per process so recovery sessions stay inside the same BrowserStack build.
+const _processStart = new Date();
+function buildTimestamp() {
+  const d = _processStart;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}-${pad2(d.getMinutes())}`;
+}
+
+// Default stress names, derived from the same effective RUN_MODE / MAX_CYCLES / DURATION_MINS
+// that test.js uses. Used only when no BROWSERSTACK_* override is given.
+function getStressNames() {
+  const appConfig = require('../config.json');
+  const mode = process.env.RUN_MODE || appConfig.mode || 'duration';
+  const ts = buildTimestamp();
+  if (mode === 'cycles') {
+    const cycles = process.env.MAX_CYCLES ? parseInt(process.env.MAX_CYCLES, 10) : (appConfig.maxCycles || 10);
+    return {
+      buildName: `${bsConfig.project.projectName} - Stress - Cycles-${cycles} - ${ts}`,
+      sessionName: `E2E Stress - ${cycles} ${cycles === 1 ? 'Cycle' : 'Cycles'}`,
+    };
+  }
+  const mins = process.env.DURATION_MINS ? parseFloat(process.env.DURATION_MINS) : (appConfig.durationMins || 5);
+  return {
+    buildName: `${bsConfig.project.projectName} - Stress - Duration-${mins}m - ${ts}`,
+    sessionName: `E2E Stress - ${mins} Minutes`,
+  };
+}
+
 // Non-secret settings: browserstack.json defaults, overridden by BROWSERSTACK_* env vars.
-function getEffectiveConfig() {
+// profile 'stress' swaps the build/session defaults for stress-run names; any default
+// (functional regression) profile keeps the browserstack.json names unchanged.
+function getEffectiveConfig(profile = 'regression') {
+  const stress = profile === 'stress' ? getStressNames() : null;
   return {
     appId: envString('BROWSERSTACK_APP_ID', bsConfig.appId),
     deviceName: envString('BROWSERSTACK_DEVICE', bsConfig.device.deviceName),
     platformVersion: envString('BROWSERSTACK_PLATFORM_VERSION', bsConfig.device.platformVersion),
     projectName: envString('BROWSERSTACK_PROJECT', bsConfig.project.projectName),
-    buildName: envString('BROWSERSTACK_BUILD', bsConfig.project.buildName),
-    sessionName: envString('BROWSERSTACK_SESSION', bsConfig.project.sessionName),
+    buildName: envString('BROWSERSTACK_BUILD', stress ? stress.buildName : bsConfig.project.buildName),
+    sessionName: envString('BROWSERSTACK_SESSION', stress ? stress.sessionName : bsConfig.project.sessionName),
     idleTimeoutSec: envPositiveInt('BROWSERSTACK_IDLE_TIMEOUT', bsConfig.idleTimeoutSec || 300),
     newCommandTimeout: envPositiveInt('BROWSERSTACK_COMMAND_TIMEOUT', bsConfig.newCommandTimeout || 300),
   };
@@ -44,7 +78,7 @@ function maskUsername(name) {
 
 // Safe summary: never includes the access key.
 function printConfigSummary() {
-  const c = getEffectiveConfig();
+  const c = getEffectiveConfig('stress');
   const appConfig = require('../config.json');
   const mode = process.env.RUN_MODE || appConfig.mode || 'duration';
   const durationMins = process.env.DURATION_MINS || appConfig.durationMins || 5;
@@ -75,7 +109,7 @@ function hasCredentials() {
   return Boolean(username && accessKey);
 }
 
-function buildBrowserstackRemoteOptions(reason = 'browserstack-proof') {
+function buildBrowserstackRemoteOptions(reason = 'browserstack-proof', profile = 'regression') {
   const { username, accessKey } = getCredentials();
   if (!username || !accessKey) {
     throw new Error(
@@ -83,7 +117,7 @@ function buildBrowserstackRemoteOptions(reason = 'browserstack-proof') {
     );
   }
 
-  const c = getEffectiveConfig();
+  const c = getEffectiveConfig(profile);
   return {
     protocol: 'https',
     hostname: 'hub-cloud.browserstack.com',
@@ -103,7 +137,8 @@ function buildBrowserstackRemoteOptions(reason = 'browserstack-proof') {
       'bstack:options': {
         projectName: c.projectName,
         buildName: c.buildName,
-        sessionName: `${c.sessionName} (${reason})`,
+        // Stress keeps the clean session name; the reason is already in the run log.
+        sessionName: profile === 'stress' ? c.sessionName : `${c.sessionName} (${reason})`,
         idleTimeout: c.idleTimeoutSec,
         debug: true,
       },
