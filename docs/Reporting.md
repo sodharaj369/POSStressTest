@@ -38,28 +38,49 @@ The dashboard is controlled via `config.json` parameters:
 
 ---
 
+## 1.9 Run Folder (Artifact Ownership)
+Every stress run (local or BrowserStack) owns one folder: `logs/<YYYY-MM-DD_HH-mm-ss>` (a `-2`, `-3` suffix is added if the name already exists). It is created once by `initRunArtifacts()` in [runArtifacts.js](file:///d:/POSStressTest/utils/runArtifacts.js) at startup. Cycles and recovery/reconnect sessions never create new folders.
+
+Contents: `run.log`, `report_<stamp>.html`, `report.xlsx`, `live_state.json`, `summary.json`, failure screenshots, and (BrowserStack) `browserstack/sessions.json`.
+
+* Report generators throw if the run folder was not initialised. They never write to a shared path.
+* `logs/latest_summary_<mode>.json` is still overwritten each run. It is only a pointer for `benchmark.js`. Use the per-run `summary.json` for history.
+* Functional regression runs use their own `reports/functional-regression*/` folders (see [FunctionalRegression](FunctionalRegression.md)).
+
+---
+
 ## 2. HTML Visual Report
-At the end of a stress run, [htmlReport.js](file:///d:/POSStressTest/utils/htmlReport.js) compiles a visual standalone dashboard file stored under `reports/`.
+At the end of a stress run, [htmlReport.js](file:///d:/POSStressTest/utils/htmlReport.js) writes `report_<stamp>.html` into the run folder. Local and BrowserStack stress runs use the same report. Only the Execution label (`Local Device` / `BrowserStack`), the BrowserStack environment rows and the sessions table differ.
 
 ### 2.1 Visual Modules
-* **Run Parameters Dashboard**: Summary cards for udid, framework, execution duration, and total order counts.
-* **Phase Duration Breakdown**: Chart displaying averages for Child Selection, Cart Build, Wallet Ready, and Payment Transition.
-* **Stability Summary Table**: Lists app restart metrics, Appium reconnect counts, and global popup recovery triggers.
-* **Cycle Logs Table**: Complete logs of each cycle's status, duration, and corresponding memory sizes.
+* **Header**: "ParentPay POS Stress Test", Execution, start, end, duration, and status (`SUCCESS`, `PARTIAL`, `FAILED`, `STOPPED_NO_ORDER`).
+* **Stress Run Overview**: run mode, cycles/duration requested, cycles completed, successful and failed orders, `NO_ORDER` cycles, success/failure rate, OPM, recoveries, reconnects, watchdog events, total time. Rates show `N/A (no orders yet)` when nothing has run.
+* **BrowserStack Sessions** (BrowserStack only): every session used by the run, including recovery rebuilds, with dashboard links. Access keys are never shown.
+* **Phase Duration Breakdown**, **Stability Summary**, memory and long-run sections.
+* **Cycle Details**: cycle, status, start, end, duration, child, product, order, recovery, reconnect, failure reason, screenshot link, notes (restricted products and skipped children).
+* **Failures / Diagnostics**: category, error, screenshot and session for each failed cycle.
+
+### 2.2 Cycle Statuses
+| Status | Meaning |
+|---|---|
+| `PASS` | Order completed |
+| `NO_ORDER` | No compatible child/product (allergen restrictions). Neutral, not a failure, not counted in failure rate |
+| `FAIL` | Automation or application failure |
+
+Run status `STOPPED_NO_ORDER` means the run stopped after `allergenRestriction.maxConsecutiveNoOrderCycles` consecutive `NO_ORDER` cycles. `PARTIAL` means the run finished but some cycles failed.
 
 ---
 
 ## 3. Excel Spreadsheet Metrics Logger
-For detailed quantitative analysis, [excelReport.js](file:///d:/POSStressTest/utils/excelReport.js) creates an XLSX spreadsheet under `reports/`.
+For detailed quantitative analysis, [excelReport.js](file:///d:/POSStressTest/utils/excelReport.js) writes `report.xlsx` into the run folder.
 
 ### 3.1 Data Schema
-* **Sheet 1: Summary**: High-level OPM, duration, success rate, and memory regression stats.
-* **Sheet 2: Cycles Raw Data**:
-  - `Cycle`: Index number.
-  - `Status`: `PASS` or `FAIL`.
-  - `Duration`: Total milliseconds.
-  - `Memory (MB)`: Heap dump value.
-  - `Recovery Actions`: Relaunch notes or watchdog trigger flags.
+* **Cycles**: Cycle, Status, Start, End, Duration, Child, Product, Order, Recovery, Reconnect, Failure Reason, Notes.
+* **Summary**: OPM, success/failure rate (`N/A` with no orders), no-order count and stop reason, recoveries, reconnects, memory and long-run stats.
+* **Startup Health**: execution environment and startup checks.
+* **Environment**: execution, status, times, device, Android, run mode, targets, run folder, BrowserStack project/build/session/app ID.
+* **Failures**: category, error, screenshot, session per failed cycle.
+* **BrowserStack Sessions** (BrowserStack only): session IDs, reason, created time, dashboard URL.
 
 ---
 

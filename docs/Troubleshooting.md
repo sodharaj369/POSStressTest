@@ -83,6 +83,11 @@ This document lists common issues encountered during stress tests, diagnostic st
 * Session video and Appium command logs are available from the BrowserStack dashboard (or REST API `/app-automate/sessions/<id>.json`) using the session ID printed at startup.
 * `mobile: clickGesture` is not supported on BrowserStack. Back navigation and raw ADB steps are skipped on BrowserStack by design.
 
+### 3.1.4 Allergen Restriction Toast
+* **Symptom**: `[TOAST] ... allergen restrictions` in `run.log`, followed by `[ALLERGEN] ... restricted` and the next product being tried.
+* This is expected, not a failure. If a toast shows but is not recognised (generic `Select Wallet button not enabled`), check `allergenRestriction.toastKeywords` in `config.json` against the toast text logged as `[TOAST]`.
+* `NO_ORDER` cycles mean every child/product was restricted. Review the child and product config if they repeat.
+
 ### 3.2 Dynamic Locator Mismatches
 * **Symptom**: Runner cannot find element targets (e.g. child name grid cells).
 * **Resolution**:

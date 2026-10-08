@@ -90,7 +90,14 @@ These are fine-tuning delays injected between page actions to allow visual trans
 * The camera permission prompt is always denied. The same handler is registered as the `System Permission` entry in `utils/popupManager.js`, so a prompt that re-appears after the POS loads is also denied (not only during onboarding).
 * `authentication.postLoginTimeoutMs` applies to local runs. On BrowserStack the post-PIN wait is fixed at 15 s (cold start is slower).
 
-## 10. BrowserStack Settings (`config/browserstack.json`)
+## 10. Allergen Restrictions
+A child can have an allergen restriction, so a product tile may be greyed and the POS shows a toast. This is an expected business rule, not an automation failure.
+
+* `allergenRestriction.toastKeywords`: substrings that identify the restriction toast. Currently `["allergen restrictions"]`, taken from the real toast "Product is unavailable due to allergen restrictions". Toast detection is the primary signal. `isEnabled()` is not reliable for this app (it returns true for the greyed tile).
+* `allergenRestriction.maxConsecutiveNoOrderCycles` (default `3`): stop the run (status `STOPPED_NO_ORDER`) after this many consecutive cycles with no possible order.
+* Candidate products come from the cart config via `getCartCandidates` in `utils/cartGenerator.js`. Product names are never hard-coded in `POSPage`.
+
+## 11. BrowserStack Settings (`config/browserstack.json`)
 Non-secret defaults for `npm run stress:browserstack` and `npm run functional-regression:browserstack`. Each value can be overridden per run with an environment variable:
 
 | `browserstack.json` key | Environment override | Default |
@@ -106,5 +113,10 @@ Non-secret defaults for `npm run stress:browserstack` and `npm run functional-re
 
 * Credentials are read only from `BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` (set them at Windows User level). They are never stored in files, logs or reports. The startup summary shows a masked username only.
 * New APK: set `BROWSERSTACK_APP_ID` or change `appId` in `config/browserstack.json`. No code change.
+* Default names for stress runs are generated from the effective run mode (not hard-coded) unless the override variables are set:
+  - Project: `ParentPay POS`
+  - Build: `ParentPay POS - Stress - Cycles-<N> - <YYYY-MM-DD-HH-MM>` or `... - Duration-<X>m - ...`
+  - Session: `E2E Stress - <N> Cycles` or `E2E Stress - <X> Minutes`
+  - Functional regression keeps its own names from `browserstack.json`.
 * Run mode comes from the same `RUN_MODE`, `MAX_CYCLES` and `DURATION_MINS` environment variables (they override `mode`, `maxCycles`, `durationMins` in `config.json`).
 * Effective values (merged file + overrides) are what appear in the startup summary and in the HTML/Excel reports.

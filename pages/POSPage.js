@@ -687,7 +687,8 @@ class POSPage {
     let toastConfirmed = 0;
     let firstTry = true;
 
-    for (const candidate of candidates) {
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      const candidate = candidates[candidateIndex];
       const cart = [];
       for (const item of candidate) {
         if (restricted.has(item.name)) {
@@ -722,7 +723,10 @@ class POSPage {
           restricted.add(err.product);
           toastConfirmed++;
           log("ALLERGEN", `"${err.product}" restricted for current child "${childName}"`);
-          await this._waitToastGone(driver);
+          // Only wait for the toast to clear if another candidate will actually be clicked.
+          const moreCandidates = candidates.slice(candidateIndex + 1)
+            .some(c => c.some(i => !restricted.has(i.name)));
+          if (moreCandidates) await this._waitToastGone(driver);
           continue;
         }
         throw err;

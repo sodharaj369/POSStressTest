@@ -40,6 +40,7 @@ Existing regression cases / Page Objects
 
 - Local driver creation: `tests/regression/helpers/regressionContext.js` (unchanged).
 - BrowserStack driver creation: `utils/browserstackDriver.js`.
+- Naming and reporting are separate: stress runs (`npm run stress:browserstack`) use generated `ParentPay POS - Stress - ...` names and the stress report in `logs/<timestamp>/`. This proof runner keeps the names from `browserstack.json` and its own report model in `reports/functional-regression-browserstack/`.
 - BrowserStack non-secret config (app id, device, project/build names): `config/browserstack.json`.
 - BrowserStack proof runner (not the full 321-case suite): `runners/browserstackRegressionRunner.js`.
   It starts a session, confirms the app launches, runs `OnboardingPage.handleIfRequired`

@@ -78,6 +78,14 @@ Update Dashboard/Metrics                       Re-enter POS Setup
 +--------------------------------------------------------+
 ```
 
+### Step 3.0: Child / Product Selection (Allergen Handling)
+Each cycle builds a child order (random first, others as fallbacks). Each child is tried at most once per cycle and each candidate product at most once per child:
+1. Select the child, then try each candidate product (`POSPage.selectCompatibleCart`).
+2. After a click, poll up to 3 s for the toast. A toast matching `allergenRestriction.toastKeywords` raises a typed `ALLERGEN_RESTRICTED`, logged as `[ALLERGEN]`. This is not a failure, does not trigger recovery, and the next candidate is tried.
+3. If every candidate is restricted, log `[CHILD] Skipping child`, call `POSPage.returnToChildSelection` (Android Back, bounded wait) and try the next child.
+4. If no child can order, the cycle is `NO_ORDER` (neutral). Consecutive `NO_ORDER` cycles are bounded by `maxConsecutiveNoOrderCycles`.
+5. Select Wallet is only clicked after a product was actually selected. A child with no restriction follows the normal path unchanged.
+
 ### Step 3.1: Pre-Cycle Controls & Cadence Checks
 * **ADB Gate**: Pings device via ADB.
 * **Network & Memory Profiling**: Dumps memory stats at the configured cadence (`networkAndMemoryCheckEveryNCycles`). If heap size exceeds `maxMemoryLimitMb`, a proactive memory recycling event is queued.
@@ -99,6 +107,6 @@ To prevent the runner from hanging on a frozen UI element, the transaction phase
 ## 4. Teardown & Reports Generation
 When the exit criteria are met:
 1. **Analytics Engine Processing**: Evaluates memory slopes and calculates final OPM throughput.
-2. **Excel Sheet Compile**: Saves run logs to `reports/`.
-3. **HTML Report Compile**: Generates a web report containing graphs and stability metrics, then opens the file in the browser.
+2. **Excel Sheet Compile**: Saves `report.xlsx` to the run folder (`logs/<timestamp>/`).
+3. **HTML Report Compile**: Generates `report_<stamp>.html` in the same run folder with the cycle table, metrics and (BrowserStack) session list. See [Reporting](Reporting.md).
 4. **Dashboard Shutdown**: Stops the live dashboard server.
