@@ -14,6 +14,42 @@ Stress testing and functional regression share stable Page Objects and utilities
   - `npm run stress`
 - Functional regression execution (new independent runner):
   - `npm run functional-regression`
+- BrowserStack proof-of-connection (second execution environment, see below):
+  - `npm run functional-regression:browserstack`
+
+## BrowserStack App Automate (Second Execution Environment)
+
+BrowserStack is an additional execution target, not a replacement for the local
+Samsung Tab + Appium setup. Keep stress testing, performance testing, and
+hardware-dependent testing (fingerprint reader, physical PIN pad, SumUp) local.
+BrowserStack is for functional regression and device/Android coverage only.
+
+Architecture:
+
+```
+Existing regression cases / Page Objects
+                |
+                v
+     environment-specific driver
+       /                      \
+   LOCAL (Appium)        BROWSERSTACK (App Automate)
+```
+
+- Local driver creation: `tests/regression/helpers/regressionContext.js` (unchanged).
+- BrowserStack driver creation: `utils/browserstackDriver.js`.
+- BrowserStack non-secret config (app id, device, project/build names): `config/browserstack.json`.
+- BrowserStack proof runner (not the full 321-case suite): `runners/browserstackRegressionRunner.js`.
+  It starts a session, confirms the app launches, runs `OnboardingPage.handleIfRequired`
+  and `LoginPage.loginIfRequired`, then ends the session. It reuses the same Page
+  Objects as local regression; it does not duplicate them.
+
+Credentials are read only from environment variables and are never hardcoded or logged:
+
+- `BROWSERSTACK_USERNAME`
+- `BROWSERSTACK_ACCESS_KEY`
+
+If either variable is missing, `npm run functional-regression:browserstack` reports
+that fact and stops before attempting a session.
 
 ## Initial Functional Regression Cases
 

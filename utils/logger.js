@@ -9,9 +9,20 @@ function initLogger(runDir) {
   logFilePath = path.join(runDir, 'run.log');
 }
 
+// Optional observer (live dashboard). Must never affect logging or the run.
+let eventSink = null;
+
+function setEventSink(fn) {
+  eventSink = typeof fn === 'function' ? fn : null;
+}
+
 function log(level, msg) {
   const isRapid = process.env.EXECUTION_MODE === 'rapid';
   const levelUpper = level.toUpperCase();
+
+  if (eventSink) {
+    try { eventSink(levelUpper, String(msg)); } catch (_e) {}
+  }
 
   if (isRapid) {
     const allowed = ['CYCLE', 'OPM', 'SUCCESS', 'ERROR', 'FATAL', 'SETUP', 'DASHBOARD', 'REPORT', 'RECOVERY', 'RELAUNCH', 'LOGIN', 'POPUP', 'SCREENSHOT', 'SCREENSHOT_ERROR', 'CLEANUP'];
@@ -41,4 +52,4 @@ function log(level, msg) {
   }
 }
 
-module.exports = { log, initLogger };
+module.exports = { log, initLogger, setEventSink };

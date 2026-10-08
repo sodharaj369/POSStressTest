@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Use npm run stress or npm run functional-regression\" && exit 1",
     "stress": "node test.js",
+    "stress:browserstack": "node scripts/runStressBrowserstack.js",
     "functional-regression": "node runners/functionalRegressionRunner.js",
+    "functional-regression:browserstack": "node runners/browserstackRegressionRunner.js",
     "benchmark": "node benchmark.js"
   },
   "keywords": [],

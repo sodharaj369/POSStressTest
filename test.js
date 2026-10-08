@@ -1,6 +1,10 @@
 const { remote } = require('webdriverio');
 const config = require('./config.json');
 const { execSync, exec } = require('child_process');
+const driverFactory = require('./utils/driverFactory');
+const EXECUTION_ENV = driverFactory.getExecutionEnv();
+const IS_BROWSERSTACK = EXECUTION_ENV === 'browserstack';
+const APP_PACKAGE = 'com.parentpay.PointOfService';
 const readline = require('readline');
 const http = require('http');
 async function checkAppiumHealth() {
@@ -35,9 +39,9 @@ async function checkAppiumHealth() {
 }
 
 // Utilities
-const { log, initLogger } = require('./utils/logger');
+const { log, initLogger, setEventSink } = require('./utils/logger');
 const { initRunArtifacts } = require('./utils/runArtifacts');
-const { reconnectAdb, ensureAdbConnected, checkNetworkStatus, getAppMemoryUsage, resetUiAutomator2Server } = require('./utils/adb');
+const { reconnectAdb, ensureAdbConnected, checkNetworkStatus, getAppMemoryUsage, resetUiAutomator2Server } = driverFactory.getAdbHelpers();
 const { generateCart } = require('./utils/cartGenerator');
 const perf = require('./utils/perfMetrics');
 const stability = require('./utils/stabilityMetrics');
@@ -118,6 +122,15 @@ function buildRemoteOptions(targetUdid) {
     };
 }
 
+async function restartAppForEnvironment(driver, targetUdid) {
+    if (IS_BROWSERSTACK) {
+        await driverFactory.restartAppViaAppium(driver, APP_PACKAGE);
+        return;
+    }
+    execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`);
+    execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
+}
+
 async function createDriverSession(targetUdid, reason = 'startup') {
     const attempts = config.driverInitRetries || 3;
     let lastError;
@@ -125,8 +138,11 @@ async function createDriverSession(targetUdid, reason = 'startup') {
     for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
             log("SETUP", `Creating Appium session (${reason}) attempt ${attempt}/${attempts}...`);
-            const driver = await remote(buildRemoteOptions(targetUdid));
+            const driver = await driverFactory.createDriver(EXECUTION_ENV, buildRemoteOptions(targetUdid));
             await driver.getWindowSize();
+            if (EXECUTION_ENV === 'browserstack') {
+                log("SETUP", `BrowserStack session ID: ${driver.sessionId}`);
+            }
 
             const currentExecutionMode = process.env.EXECUTION_MODE || config.executionMode || 'standard';
             if (currentExecutionMode === 'rapid') {
@@ -150,12 +166,15 @@ async function createDriverSession(targetUdid, reason = 'startup') {
         } catch (e) {
             lastError = e;
             log("SETUP_WARNING", `Session creation attempt ${attempt} failed: ${e.message}`);
-            try {
-                resetUiAutomator2Server(targetUdid);
-                execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`);
-                execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
-            } catch (resetErr) {
-                log("ADB_WARNING", `Driver creation recovery failed: ${resetErr.message}`);
+            // BrowserStack: no session exists to restart the app with, and each new session starts the app itself.
+            if (!IS_BROWSERSTACK) {
+                try {
+                    resetUiAutomator2Server(targetUdid);
+                    execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`);
+                    execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
+                } catch (resetErr) {
+                    log("ADB_WARNING", `Driver creation recovery failed: ${resetErr.message}`);
+                }
             }
             await sleep(2500);
         }
@@ -358,10 +377,21 @@ async function setupAndEnterPOS(driver, unknownRecoveryAttempt = 0) {
 
         case 'State_E':
             log("SETUP", "🎯 State E Detected: Already on Hierarchy Selection screen.");
+            // BrowserStack: State_E can already be the school list ("Choose the school"). Select directly, no back navigation.
+            if (IS_BROWSERSTACK && await HierarchyPage.isSchoolSelectionScreen(driver)) {
+                log("SETUP", "BrowserStack: school selection screen already displayed. Selecting school directly.");
+                await HierarchyPage.selectSchool(driver);
+                await HierarchyPage.selectLeftOption(driver);
+                break;
+            }
             let isCorrectSchool = false;
             try {
                 const leftOption = await driver.$(`android=new UiSelector().text("${locators.hierarchyLeft}")`);
-                if (await leftOption.isExisting() && await leftOption.isDisplayed()) {
+                if (IS_BROWSERSTACK) {
+                    // Wait for the hierarchy list to load instead of polling for ~1.7s.
+                    const hierarchyWaitMs = (config.timeouts && config.timeouts.defaultWaitMs) || 15000;
+                    isCorrectSchool = await leftOption.waitForDisplayed({ timeout: hierarchyWaitMs }).then(() => true).catch(() => false);
+                } else if (await leftOption.isExisting() && await leftOption.isDisplayed()) {
                     isCorrectSchool = true;
                 } else {
                     log("SETUP", `Checking if target outlet "${locators.hierarchyLeft}" is visible in list...`);
@@ -380,8 +410,13 @@ async function setupAndEnterPOS(driver, unknownRecoveryAttempt = 0) {
                 await HierarchyPage.selectLeftOption(driver);
             } else {
                 log("SETUP", "⚠️ Wrong school pre-selected! Navigating back to correct it...");
+                if (IS_BROWSERSTACK) {
+                    await HierarchyPage.captureStateDiagnostics(driver, 'state_E_wrong_school');
+                }
                 await HierarchyPage.clickBackButton(driver);
-                log("SETUP", "🎯 State A Detected: Starting school selection flow...");
+                if (!IS_BROWSERSTACK) {
+                    log("SETUP", "🎯 State A Detected: Starting school selection flow...");
+                }
                 await HierarchyPage.selectSchool(driver);
                 await HierarchyPage.selectLeftOption(driver);
             }
@@ -423,8 +458,7 @@ async function setupAndEnterPOS(driver, unknownRecoveryAttempt = 0) {
             }
             const targetUdid = driver.capabilities.udid;
             try {
-                execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`);
-                execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
+                await restartAppForEnvironment(driver, targetUdid);
                 stability.increment('appRestarts');
             } catch (adbErr) {
                 log("ADB_WARNING", `Failed to reboot app during recovery: ${adbErr.message}`);
@@ -505,9 +539,14 @@ async function main() {
         executionMode: executionMode,
     };
 
-    try {
-        executionMeta.appiumVersion = execSync('appium --version').toString().trim();
-    } catch (e) {}
+    if (IS_BROWSERSTACK) {
+        executionMeta.appiumVersion = 'BrowserStack (remote Appium)';
+        executionMeta.executionEnv = 'BrowserStack';
+    } else {
+        try {
+            executionMeta.appiumVersion = execSync('appium --version').toString().trim();
+        } catch (e) {}
+    }
 
     try {
         if (config.liveDashboardEnabled !== false) {
@@ -528,8 +567,33 @@ async function main() {
         dashboard.addEvent(type, message);
     };
 
-    const updateDashboardMetrics = (currentCycle) => {
+    // Forward existing startup/run log lines to the feed. Tags that already have explicit dashboard events are excluded.
+    const FEED_TAGS = new Set(['ONBOARDING', 'LOGIN', 'HIERARCHY', 'POS_MENU', 'STATE', 'POPUP']);
+    if (dashboard) {
+        setEventSink((tag, msg) => {
+            if (FEED_TAGS.has(tag)
+                || (tag === 'CYCLE' && /^Starting Cycle/.test(msg))
+                || (tag === 'SETUP' && /^BrowserStack device/.test(msg))
+                || (tag === 'ERROR' && /^Initial setup attempt/.test(msg))) {
+                dashboard.addEvent(tag, msg);
+            }
+        });
+    }
+
+    // Dashboard status comes from real run state, never from runStatus's initial value.
+    let runFinished = false;
+    let lastDashboardCycle = 0;
+    const getDashboardStatus = (s) => {
+        if (!runFinished) return loopStartTime ? 'RUNNING' : 'STARTING';
+        if (runStatus === 'FAILED' || (s.cyclesCompleted === 0 && s.cyclesFailed > 0)) return 'FAILED';
+        return s.cyclesFailed > 0 ? 'PARTIAL' : 'SUCCESS';
+    };
+
+    const updateDashboardMetrics = (requestedCycle) => {
         if (!dashboard) return;
+        // Final/fatal updates pass 0; keep the last real cycle visible.
+        lastDashboardCycle = Math.max(lastDashboardCycle, requestedCycle);
+        const currentCycle = requestedCycle > 0 ? requestedCycle : lastDashboardCycle;
         const s = stability.getSummaryData();
         const perfSummary = perf.getSummaryData();
         const startMs = loopStartTime || executionStart.getTime();
@@ -544,31 +608,44 @@ async function main() {
         const totalText = runMode === 'duration'
             ? formatDuration(targetDurationMs)
             : `${maxCycles} cycles`;
-        const remainingText = runMode === 'duration'
+        const remainingText = runMode === 'duration' && loopStartTime
             ? formatDuration(Math.max(0, targetDurationMs - elapsedMs))
             : 'N/A';
+        const status = getDashboardStatus(s);
         dashboard.updateMetrics({
             currentCycle,
             ordersPerMinute: opm,
-            successRate: s.successRate,
+            successRate: s.attempts > 0 ? s.successRate : 'N/A',
             recoveries: s.recoveredFailures,
             reconnects: s.adbReconnects,
             elapsedText,
             totalText,
             remainingText,
-            runStatus,
+            runStatus: status,
+            // Lets the page tick elapsed/remaining live between pushes.
+            elapsedStartMs: startMs,
+            targetMs: runMode === 'duration' && loopStartTime ? targetDurationMs : 0,
         });
     };
 
-    log("SETUP", "Checking Appium server health at http://127.0.0.1:4723/status ...");
+    if (IS_BROWSERSTACK) {
+        log("SETUP", "Execution environment: BrowserStack. Using remote BrowserStack Appium hub; local Appium/ADB/network checks are not applicable.");
+    } else {
+        log("SETUP", "Checking Appium server health at http://127.0.0.1:4723/status ...");
+    }
     try {
-        await checkAppiumHealth();
-        startupHealth.appiumReady = true;
-        log("SETUP", "Appium server is healthy and ready.");
+        if (IS_BROWSERSTACK) {
+            startupHealth.appiumReady = 'N/A';
+        } else {
+            await checkAppiumHealth();
+            startupHealth.appiumReady = true;
+            log("SETUP", "Appium server is healthy and ready.");
+        }
     } catch (e) {
         log("FATAL", `Appium server health check failed: ${e.message}`);
         runStatus = 'FAILED';
         addDashboardEvent('FATAL', `Appium health check failed: ${e.message}`);
+        runFinished = true;
         updateDashboardMetrics(0);
         stability.markFatalFailure(stability.classifyFailureReason(e.message));
         stability.printSummary('FAILED');
@@ -631,27 +708,31 @@ async function main() {
         return;
     }
     // Proactively check wireless ADB reconnection
-    if (config.udid) {
+    if (config.udid && !IS_BROWSERSTACK) {
         if (reconnectAdb(config.udid)) {
             addDashboardEvent('ADB', 'ADB reconnect successful');
         }
     }
 
-    targetUdid = await getDeviceUdid();
+    targetUdid = IS_BROWSERSTACK ? 'browserstack' : await getDeviceUdid();
     startupHealth.udid = targetUdid;
+    startupHealth.executionEnv = EXECUTION_ENV;
 
-    try {
-        executionMeta.deviceName = execSync(`adb -s ${targetUdid} shell getprop ro.product.model`).toString().trim() || 'Unknown';
-        executionMeta.androidVersion = execSync(`adb -s ${targetUdid} shell getprop ro.build.version.release`).toString().trim() || 'Unknown';
-    } catch (e) {}
+    if (!IS_BROWSERSTACK) {
+        try {
+            executionMeta.deviceName = execSync(`adb -s ${targetUdid} shell getprop ro.product.model`).toString().trim() || 'Unknown';
+            executionMeta.androidVersion = execSync(`adb -s ${targetUdid} shell getprop ro.build.version.release`).toString().trim() || 'Unknown';
+        } catch (e) {}
+    }
 
     // Ensure connection state is stable before starting Appium session
-    const adbConnectedAtStart = ensureAdbConnected(targetUdid);
+    // BrowserStack: ADB and local network checks do not apply, so they are reported as N/A, not as passed.
+    const adbConnectedAtStart = IS_BROWSERSTACK ? 'N/A' : ensureAdbConnected(targetUdid);
     startupHealth.adbConnected = adbConnectedAtStart;
     if (!adbConnectedAtStart) {
         throw new Error(`ADB device "${targetUdid}" is not connected or offline before session start.`);
     }
-    const networkOnlineAtStart = checkNetworkStatus(targetUdid);
+    const networkOnlineAtStart = IS_BROWSERSTACK ? 'N/A' : checkNetworkStatus(targetUdid);
     startupHealth.networkOnline = networkOnlineAtStart;
     if (!networkOnlineAtStart) {
         log("NETWORK_WARNING", "Device network check failed before session start. Continuing with recovery-capable flow.");
@@ -669,28 +750,46 @@ async function main() {
     }));
 
     // Force stop and launch freshly via ADB before creating first Appium session
-    try {
-        log("ADB", `Force-stopping app via ADB on device: "${targetUdid}"...`);
-        execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`);
-        
-        // Keep device awake if configured
-        if (config.keepAwake !== false) {
-            try {
-                log("ADB", `Setting 'svc power stayon true' on device: "${targetUdid}" to prevent screen sleep...`);
-                execSync(`adb -s ${targetUdid} shell svc power stayon true`);
-            } catch (awakeErr) {
-                log("ADB_WARNING", `Failed to set device keep-awake: ${awakeErr.message}`);
-            }
-        }
+    // BrowserStack: the new session installs and launches the app itself; keep-awake is managed by BrowserStack.
+    if (!IS_BROWSERSTACK) {
+        try {
+            log("ADB", `Force-stopping app via ADB on device: "${targetUdid}"...`);
+            execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`);
 
-        log("ADB", `Launching app via ADB on device: "${targetUdid}"...`);
-        execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
-        await new Promise(resolve => setTimeout(resolve, 3000)); // wait for layout to start
-    } catch (adbError) {
-        log("ADB_WARNING", `ADB initial launch sequence warning: ${adbError.message}`);
+            // Keep device awake if configured
+            if (config.keepAwake !== false) {
+                try {
+                    log("ADB", `Setting 'svc power stayon true' on device: "${targetUdid}" to prevent screen sleep...`);
+                    execSync(`adb -s ${targetUdid} shell svc power stayon true`);
+                } catch (awakeErr) {
+                    log("ADB_WARNING", `Failed to set device keep-awake: ${awakeErr.message}`);
+                }
+            }
+
+            log("ADB", `Launching app via ADB on device: "${targetUdid}"...`);
+            execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
+            await new Promise(resolve => setTimeout(resolve, 3000)); // wait for layout to start
+        } catch (adbError) {
+            log("ADB_WARNING", `ADB initial launch sequence warning: ${adbError.message}`);
+        }
     }
 
     driver = await createDriverSession(targetUdid, 'initial');
+    if (IS_BROWSERSTACK) {
+        const bs = driverFactory.describeSession(driver);
+        const bsCfg = require('./utils/browserstackDriver').getEffectiveConfig();
+        executionMeta.deviceName = `${bsCfg.deviceName} (BrowserStack)`;
+        executionMeta.androidVersion = bsCfg.platformVersion;
+        startupHealth.browserstackSessionId = bs.sessionId;
+        startupHealth.browserstackConfig = {
+            appId: bsCfg.appId,
+            projectName: bsCfg.projectName,
+            buildName: bsCfg.buildName,
+            sessionName: bsCfg.sessionName,
+        };
+        log("SETUP", `BrowserStack device: ${executionMeta.deviceName}, Android ${executionMeta.androidVersion}, session ${bs.sessionId}`);
+        log("SETUP", "Memory monitoring: N/A on BrowserStack (no ADB meminfo).");
+    }
     addDashboardEvent('SESSION', 'Initial session created');
     updateDashboardMetrics(0);
 
@@ -735,6 +834,7 @@ async function main() {
                             await driver.deleteSession();
                         } catch (e) { }
 
+                        if (!IS_BROWSERSTACK) {
                         if (reconnectAdb(targetUdid)) {
                             addDashboardEvent('ADB', 'ADB reconnect successful');
                         }
@@ -754,6 +854,9 @@ async function main() {
                             stability.increment('appRestarts');
                         } catch (adbError) {
                             log("ADB_WARNING", `ADB launch warning: ${adbError.message}`);
+                        }
+                        } else {
+                            log("SETUP", "BrowserStack: session deleted; new session installs and launches the app (no ADB restart).");
                         }
 
                         driver = await createDriverSession(targetUdid, 'startup-crash-recovery');
@@ -999,12 +1102,14 @@ async function main() {
                         } catch (memErr) {
                             log("RELAUNCH_WARNING", `App bounce failed (${memErr.message}), falling back to full session recovery...`);
                             try { await driver.deleteSession(); } catch (e) { }
+                            if (!IS_BROWSERSTACK) {
                             resetUiAutomator2Server(targetUdid);
                             try { execSync(`adb -s ${targetUdid} shell am force-stop com.parentpay.PointOfService`); } catch (e) { }
                             try {
                                 execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
                                 stability.increment('appRestarts');
                             } catch (e) { }
+                            }
                             try {
                                 driver = await createDriverSession(targetUdid, 'mem-recycle-fallback');
                                 await setupAndEnterPOS(driver);
@@ -1032,6 +1137,7 @@ async function main() {
                         try {
                             try { await driver.deleteSession(); } catch (e) { }
 
+                            if (!IS_BROWSERSTACK) {
                             if (reconnectAdb(targetUdid)) {
                                 addDashboardEvent('ADB', 'ADB reconnect successful');
                             }
@@ -1046,6 +1152,9 @@ async function main() {
                                 execSync(`adb -s ${targetUdid} shell am start -n com.parentpay.PointOfService/com.parentpay.PointOfService.MainActivity`);
                                 stability.increment('appRestarts');
                             } catch (adbError) { log("ADB_WARNING", `launch warning: ${adbError.message}`); }
+                            } else {
+                                log("SETUP", "BrowserStack: session deleted; new session installs and launches the app (no ADB restart).");
+                            }
 
                             // Wait for the device to fully stabilise before creating the new session.
                             // Without this delay, Appium can fail to connect immediately after a UiAutomator2 crash.
@@ -1108,6 +1217,7 @@ async function main() {
         stability.printSummary('SUCCESS');
         longRun.printSummary(stability.getSummaryData());
         addDashboardEvent('SUCCESS', `Run complete. Executed ${cycle - 1} cycles`);
+        runFinished = true;
         updateDashboardMetrics(cycle - 1);
 
     } catch (error) {
@@ -1117,6 +1227,7 @@ async function main() {
         stability.printSummary('FAILED');
         longRun.printSummary(stability.getSummaryData());
         addDashboardEvent('FATAL', error.message);
+        runFinished = true;
         updateDashboardMetrics(0);
     } finally {
         try {

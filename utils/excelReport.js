@@ -144,11 +144,21 @@ async function generateExcelReport(payload) {
     cell.alignment = { vertical: 'middle', horizontal: 'center' };
   });
 
-  const asYesNoUnknown = (v) => (v === true ? 'Yes' : (v === false ? 'No' : 'Unknown'));
+  const asYesNoUnknown = (v) => (v === true ? 'Yes' : (v === false ? 'No' : (v === 'N/A' ? 'Not Applicable' : 'Unknown')));
+  const isBs = startup.executionEnv === 'browserstack';
   const healthRows = [
-    { check: 'Appium Ready', value: asYesNoUnknown(startup.appiumReady) },
-    { check: 'ADB Connected', value: asYesNoUnknown(startup.adbConnected) },
-    { check: 'Network Online', value: asYesNoUnknown(startup.networkOnline) },
+    ...(isBs ? [
+      { check: 'Execution Environment', value: 'BrowserStack' },
+      { check: 'BrowserStack Session ID', value: startup.browserstackSessionId || 'Unknown' },
+      { check: 'BrowserStack App ID', value: (startup.browserstackConfig || {}).appId || 'Unknown' },
+      { check: 'BrowserStack Project', value: (startup.browserstackConfig || {}).projectName || 'Unknown' },
+      { check: 'BrowserStack Build', value: (startup.browserstackConfig || {}).buildName || 'Unknown' },
+      { check: 'BrowserStack Session Name', value: (startup.browserstackConfig || {}).sessionName || 'Unknown' },
+      { check: 'Memory Monitoring', value: 'Not Applicable' },
+    ] : []),
+    { check: isBs ? 'Local Appium Server' : 'Appium Ready', value: asYesNoUnknown(startup.appiumReady) },
+    { check: isBs ? 'ADB' : 'ADB Connected', value: asYesNoUnknown(startup.adbConnected) },
+    { check: isBs ? 'Local Network Check' : 'Network Online', value: asYesNoUnknown(startup.networkOnline) },
     { check: 'Run Mode', value: startup.runMode || 'Unknown' },
     { check: 'Duration Target (mins)', value: startup.durationMins ?? 'N/A' },
     { check: 'Cycle Target', value: startup.maxCycles ?? 'N/A' },

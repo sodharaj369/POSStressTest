@@ -1,0 +1,14 @@
+{
+  "appId": "bs://2bdaab5eb9b8148952a23e882430e1ac182872cd",
+  "device": {
+    "deviceName": "Samsung Galaxy Tab S10 Plus",
+    "platformVersion": "15.0"
+  },
+  "project": {
+    "projectName": "ParentPay POS",
+    "buildName": "Functional Regression - BrowserStack Proof",
+    "sessionName": "BrowserStack Proof Connection Test"
+  },
+  "idleTimeoutSec": 300,
+  "newCommandTimeout": 300
+}

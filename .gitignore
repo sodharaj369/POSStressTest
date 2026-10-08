@@ -36,6 +36,7 @@ screenshots/
 
 # Functional regression runtime artifacts
 reports/functional-regression/
+reports/functional-regression-browserstack/
 
 # Runtime-generated temporary files
 config.runtime.json

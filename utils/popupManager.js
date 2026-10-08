@@ -39,6 +39,23 @@ async function capturePopupDiagnostics(driver, popupName) {
 // List of registered popup handlers
 const popupDefinitions = [
   {
+    name: 'System Permission',
+
+    // One findElements on permission_message. Empty result means no dialog, so this is a no-op.
+    detect: async (driver) => {
+      const OnboardingPage = require('../pages/OnboardingPage');
+      return !!(await OnboardingPage.getSystemPermissionKind(driver));
+    },
+
+    // Reuses the onboarding policy: camera is always denied, notifications follow onboarding.allowNotifications.
+    handle: async (driver) => {
+      const OnboardingPage = require('../pages/OnboardingPage');
+      const handled = await OnboardingPage.handleNotificationPermissionIfPresent(driver);
+      if (handled) stability.increment('popupRecoveries');
+      return handled;
+    }
+  },
+  {
     name: 'Pending Orders',
     
     /**

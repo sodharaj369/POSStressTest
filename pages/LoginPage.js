@@ -2,10 +2,12 @@ const BasePage = require('./BasePage');
 const config = require('../config.json');
 const locators = require('../locators.json');
 const { log } = require('../utils/logger');
+const { isBrowserstack } = require('../utils/driverFactory');
 
 const DIGIT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
 const PIN_LENGTH = 6;
 const defaultPostLoginTimeoutMs = 5000;
+const browserstackPostLoginTimeoutMs = 15000;
 
 const byResourceId = (id) => `android=new UiSelector().resourceId("${id}")`;
 
@@ -15,6 +17,8 @@ class LoginPage {
   }
 
   static getPostLoginTimeoutMs() {
+    // BrowserStack cold start can exceed the local 5s default.
+    if (isBrowserstack()) return browserstackPostLoginTimeoutMs;
     return (config.authentication && config.authentication.postLoginTimeoutMs) || defaultPostLoginTimeoutMs;
   }
 

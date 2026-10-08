@@ -66,6 +66,7 @@ function dashboardHtml() {
     .good { color: var(--ok); }
     .warn { color: var(--warn); }
     .bad { color: var(--bad); }
+    .info { color: #60a5fa; }
     .feed {
       background: #0f1a2d;
       border: 1px solid var(--line);
@@ -98,10 +99,10 @@ function dashboardHtml() {
       <div class="card"><div class="label">Elapsed</div><div class="value" id="elapsedText">0m 0s</div></div>
       <div class="card"><div class="label">Total Run</div><div class="value" id="totalText">0m 0s</div></div>
       <div class="card"><div class="label">Remaining</div><div class="value" id="remainingText">0m 0s</div></div>
-      <div class="card"><div class="label">Success Rate</div><div class="value good" id="successRate">0.0%</div></div>
+      <div class="card"><div class="label">Success Rate</div><div class="value" id="successRate">No orders yet</div></div>
       <div class="card"><div class="label">Recoveries</div><div class="value warn" id="recoveries">0</div></div>
       <div class="card"><div class="label">Reconnects</div><div class="value warn" id="reconnects">0</div></div>
-      <div class="card"><div class="label">Status</div><div class="value" id="runStatus">RUNNING</div></div>
+      <div class="card"><div class="label">Status</div><div class="value" id="runStatus">STARTING</div></div>
     </div>
 
     <div class="feed" id="feed"></div>
@@ -117,17 +118,48 @@ function dashboardHtml() {
       if (el) el.textContent = value;
     }
 
+    const STATUS_CLASS = { STARTING: 'warn', RUNNING: 'info', SUCCESS: 'good', FAILED: 'bad', PARTIAL: 'warn' };
+    let live = { active: false, startMs: 0, targetMs: 0 };
+
+    function setValue(id, text, cls) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text;
+      el.className = 'value' + (cls ? ' ' + cls : '');
+    }
+
+    function fmt(ms) {
+      const t = Math.max(0, Math.floor(ms / 1000));
+      return Math.floor(t / 60) + 'm ' + (t % 60) + 's';
+    }
+
     function renderMetrics(m) {
+      const status = m.runStatus ?? 'STARTING';
       setText('currentCycle', m.currentCycle ?? 0);
       setText('opm', m.ordersPerMinute ?? '0.0');
       setText('elapsedText', m.elapsedText ?? '0m 0s');
-      setText('totalText', m.totalText ?? '0m 0s');
-      setText('remainingText', m.remainingText ?? '0m 0s');
-      setText('successRate', m.successRate ?? '0.0%');
+      setText('totalText', m.totalText ?? 'N/A');
+      setText('remainingText', m.remainingText ?? 'N/A');
+      const rate = m.successRate;
+      const noOrders = rate === undefined || rate === null || rate === 'N/A';
+      setValue('successRate', noOrders ? 'No orders yet' : rate, noOrders ? '' : (status === 'FAILED' ? 'bad' : status === 'SUCCESS' ? 'good' : ''));
       setText('recoveries', m.recoveries ?? 0);
       setText('reconnects', m.reconnects ?? 0);
-      setText('runStatus', m.runStatus ?? 'RUNNING');
+      setValue('runStatus', status, STATUS_CLASS[status] || '');
+      live = {
+        active: status === 'STARTING' || status === 'RUNNING',
+        startMs: m.elapsedStartMs || 0,
+        targetMs: m.targetMs || 0,
+      };
     }
+
+    // Live elapsed/remaining between server pushes (browser clock only; no effect on the run).
+    setInterval(() => {
+      if (!live.active || !live.startMs) return;
+      const elapsed = Date.now() - live.startMs;
+      setText('elapsedText', fmt(elapsed));
+      if (live.targetMs) setText('remainingText', fmt(live.targetMs - elapsed));
+    }, 1000);
 
     function addEvent(ev) {
       const row = document.createElement('div');
@@ -178,12 +210,12 @@ async function startLiveDashboard(options = {}) {
       currentCycle: 0,
       ordersPerMinute: '0.0',
       elapsedText: '0m 0s',
-      totalText: '0m 0s',
-      remainingText: '0m 0s',
-      successRate: '0.0%',
+      totalText: 'N/A',
+      remainingText: 'N/A',
+      successRate: 'N/A',
       recoveries: 0,
       reconnects: 0,
-      runStatus: 'RUNNING',
+      runStatus: 'STARTING',
     },
     events: [],
   };

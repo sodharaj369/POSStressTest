@@ -40,6 +40,14 @@ function row(label, value, cls = '') {
   return `<tr><td>${esc(label)}</td><td class="${cls}">${esc(value)}</td></tr>`;
 }
 
+function bsConfigRows(cfg) {
+  const c = cfg || {};
+  return row('BrowserStack App ID', c.appId || 'Unknown')
+    + row('BrowserStack Project', c.projectName || 'Unknown')
+    + row('BrowserStack Build', c.buildName || 'Unknown')
+    + row('BrowserStack Session Name', c.sessionName || 'Unknown');
+}
+
 function toNumberPercent(value) {
   const n = Number(String(value || '').replace('%', '').trim());
   return Number.isFinite(n) ? n : 0;
@@ -213,7 +221,8 @@ function buildHtml(payload) {
   const memoryLeak = longRunData.memoryLeak || {};
   const recoverySpikes = longRunData.recoverySpikes || {};
   const startup = startupHealth || {};
-  const boolText = (v) => (v === true ? 'Yes' : (v === false ? 'No' : 'Unknown'));
+  const boolText = (v) => (v === true ? 'Yes' : (v === false ? 'No' : (v === 'N/A' ? 'Not Applicable' : 'Unknown')));
+  const isBs = startup.executionEnv === 'browserstack';
   const { assessMemoryHealth } = require('./longRunAnalytics');
   const memHealth = assessMemoryHealth(memoryLeak, slowdown, stability);
   const runHealth = classifyRunHealth({ status, stability, longRun: longRunData, startupHealth: startup });
@@ -426,9 +435,10 @@ function buildHtml(payload) {
       <section class="card">
         <h2>Startup Health Gate</h2>
         <table>
-          ${row('Appium Ready', boolText(startup.appiumReady), startup.appiumReady === true ? 'pass' : (startup.appiumReady === false ? 'fail' : ''))}
-          ${row('ADB Connected', boolText(startup.adbConnected), startup.adbConnected === true ? 'pass' : (startup.adbConnected === false ? 'fail' : ''))}
-          ${row('Network Online', boolText(startup.networkOnline), startup.networkOnline === true ? 'pass' : (startup.networkOnline === false ? 'fail' : ''))}
+          ${startup.executionEnv === 'browserstack' ? row('Execution Environment', 'BrowserStack') + row('BrowserStack Session ID', startup.browserstackSessionId || 'Unknown') + row('Memory Monitoring', 'Not Applicable') + bsConfigRows(startup.browserstackConfig) : ''}
+          ${row(isBs ? 'Local Appium Server' : 'Appium Ready', boolText(startup.appiumReady), startup.appiumReady === true ? 'pass' : (startup.appiumReady === false ? 'fail' : ''))}
+          ${row(isBs ? 'ADB' : 'ADB Connected', boolText(startup.adbConnected), startup.adbConnected === true ? 'pass' : (startup.adbConnected === false ? 'fail' : ''))}
+          ${row(isBs ? 'Local Network Check' : 'Network Online', boolText(startup.networkOnline), startup.networkOnline === true ? 'pass' : (startup.networkOnline === false ? 'fail' : ''))}
           ${row('Run Mode', startup.runMode || 'Unknown')}
           ${row('Duration Target', startup.durationMins != null ? `${startup.durationMins} mins` : 'N/A')}
           ${row('Cycle Target', startup.maxCycles != null ? startup.maxCycles : 'N/A')}
