@@ -87,3 +87,24 @@ These are fine-tuning delays injected between page actions to allow visual trans
   - `allowNotifications`: Optional. `true` allows notifications and grants the app's "Permissions Required" dialog. Default denies/cancels.
 * `POS_QR_CODE` environment variable overrides `onboarding.qrCode`. The value is never logged.
 * Flow: permission prompts → Skip → "Tap to manually enter QR code" → GUID → Save → PIN screen. When onboarding is already complete the handler is a single cheap probe and does nothing.
+* The camera permission prompt is always denied. The same handler is registered as the `System Permission` entry in `utils/popupManager.js`, so a prompt that re-appears after the POS loads is also denied (not only during onboarding).
+* `authentication.postLoginTimeoutMs` applies to local runs. On BrowserStack the post-PIN wait is fixed at 15 s (cold start is slower).
+
+## 10. BrowserStack Settings (`config/browserstack.json`)
+Non-secret defaults for `npm run stress:browserstack` and `npm run functional-regression:browserstack`. Each value can be overridden per run with an environment variable:
+
+| `browserstack.json` key | Environment override | Default |
+|---|---|---|
+| `appId` | `BROWSERSTACK_APP_ID` | uploaded POS APK (`bs://...`) |
+| `deviceName` | `BROWSERSTACK_DEVICE` | Samsung Galaxy Tab S10 Plus |
+| `platformVersion` | `BROWSERSTACK_PLATFORM_VERSION` | 15.0 |
+| `projectName` | `BROWSERSTACK_PROJECT` | from file |
+| `buildName` | `BROWSERSTACK_BUILD` | from file |
+| `sessionName` | `BROWSERSTACK_SESSION` | from file |
+| `idleTimeoutSec` | `BROWSERSTACK_IDLE_TIMEOUT` | 300 (positive integer) |
+| `newCommandTimeout` | `BROWSERSTACK_COMMAND_TIMEOUT` | 300 (positive integer) |
+
+* Credentials are read only from `BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` (set them at Windows User level). They are never stored in files, logs or reports. The startup summary shows a masked username only.
+* New APK: set `BROWSERSTACK_APP_ID` or change `appId` in `config/browserstack.json`. No code change.
+* Run mode comes from the same `RUN_MODE`, `MAX_CYCLES` and `DURATION_MINS` environment variables (they override `mode`, `maxCycles`, `durationMins` in `config.json`).
+* Effective values (merged file + overrides) are what appear in the startup summary and in the HTML/Excel reports.

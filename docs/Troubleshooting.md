@@ -72,6 +72,17 @@ This document lists common issues encountered during stress tests, diagnostic st
   2. Verify network responsiveness: a laggy internet connection can slow down child search overlays or payment processing times beyond the watchdog limit.
   3. Check memory trends: cumulative memory leaks may slow down MAUI transition rendering.
 
+### 3.1.1 Android Permission Dialog Blocks the POS
+* **Symptom**: POS grid is visible in the screenshot with an Android dialog on top (for example "Allow Point of Service to take pictures and record video?"). Menu clicks time out and the transition monitor waits the full 60 s.
+* **Resolution**: The global popup handler (`System Permission` in [popupManager.js](file:///d:/POSStressTest/utils/popupManager.js)) denies camera prompts using the onboarding policy. If a new kind of permission text appears, extend `getSystemPermissionKind` in `pages/OnboardingPage.js`.
+
+### 3.1.2 BrowserStack Run Reports `FAILED` but npm Exits 0
+* `[FATAL]` failures are caught inside `test.js`, so `npm run stress:browserstack` can exit 0. Judge the run by `run.log`, the stability report status and the dashboard status, not the exit code alone.
+
+### 3.1.3 BrowserStack Debugging
+* Session video and Appium command logs are available from the BrowserStack dashboard (or REST API `/app-automate/sessions/<id>.json`) using the session ID printed at startup.
+* `mobile: clickGesture` is not supported on BrowserStack. Back navigation and raw ADB steps are skipped on BrowserStack by design.
+
 ### 3.2 Dynamic Locator Mismatches
 * **Symptom**: Runner cannot find element targets (e.g. child name grid cells).
 * **Resolution**:

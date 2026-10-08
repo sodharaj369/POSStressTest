@@ -16,6 +16,9 @@ Stress testing and functional regression share stable Page Objects and utilities
   - `npm run functional-regression`
 - BrowserStack proof-of-connection (second execution environment, see below):
   - `npm run functional-regression:browserstack`
+- Full stress engine on BrowserStack (same `test.js`, remote driver):
+  - `npm run stress:browserstack` (launcher: `scripts/runStressBrowserstack.js`, driver switch: `utils/driverFactory.js`, `EXECUTION_ENV=browserstack`)
+  - Interactive Windows launcher: `run-browserstack.bat`
 
 ## BrowserStack App Automate (Second Execution Environment)
 
@@ -50,6 +53,11 @@ Credentials are read only from environment variables and are never hardcoded or 
 
 If either variable is missing, `npm run functional-regression:browserstack` reports
 that fact and stops before attempting a session.
+
+All non-secret settings (app id, device, Android version, project, build, session name,
+timeouts) can be overridden with `BROWSERSTACK_*` environment variables. See
+`docs/Configuration.md` section 10. Reports and the startup summary use the merged
+effective configuration (`getEffectiveConfig()` in `utils/browserstackDriver.js`).
 
 ## Initial Functional Regression Cases
 
@@ -99,7 +107,7 @@ Functional regression reports are stored separately from stress analytics:
 - `reports/functional-regression/<run-id>/functional_regression_report.json`
 - Failure screenshots and diagnostics are stored under the same run folder.
 
-Stress report utilities, dashboard behavior, and stress metrics remain unchanged.
+Stress report utilities and stress metrics remain unchanged. The live dashboard now reports the real run state (see `docs/Reporting.md`).
 
 ## How To Add A Future Regression Case
 

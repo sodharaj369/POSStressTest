@@ -82,7 +82,11 @@ d:/POSStressTest/
 │   ├── BasePage.js
 │   ├── POSPage.js
 │   └── CheckoutPage.js
-├── utils/              # Metrics, adb helper, and reporting generators
+├── utils/              # Metrics, adb helper, reporting generators, driver factory, BrowserStack driver
+├── config/             # BrowserStack defaults (browserstack.json)
+├── scripts/            # BrowserStack stress launcher
+├── runners/            # Functional regression and BrowserStack proof runners
+├── run-browserstack.bat # Interactive BrowserStack stress launcher (Windows)
 ├── test.js             # Main execution loop
 ├── benchmark.js        # Benchmark execution tool
 ├── config.json         # User runtime configuration settings
@@ -127,6 +131,12 @@ Run the independent functional regression suite:
 npm run functional-regression
 ```
 
+Run the same stress engine on BrowserStack App Automate (local flow is unchanged):
+```bash
+npm run stress:browserstack
+```
+Needs the Windows User environment variables `BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY`. Optional: `RUN_MODE` (`cycles` or `duration`), `MAX_CYCLES`, `DURATION_MINS`, and the `BROWSERSTACK_*` overrides listed in [Configuration](docs/Configuration.md). On Windows you can double-click `run-browserstack.bat` for an interactive launcher (asks run type, count, optional APK id, then confirms before starting).
+
 Or run the benchmark to compare standard and rapid modes:
 ```bash
 node benchmark.js
@@ -135,7 +145,7 @@ node benchmark.js
 ---
 
 ## 7. Reports & Dashboard
-* **Live Dashboard**: Automatically opens on `http://127.0.0.1:5050` (if configured) to display OPM, cycle statuses, and active events.
+* **Live Dashboard**: Automatically opens on `http://127.0.0.1:5050` (if configured) to display OPM, cycle statuses, and active events. Status moves STARTING → RUNNING → SUCCESS / PARTIAL / FAILED; success rate reads "No orders yet" until a cycle finishes (see `docs/Reporting.md`).
 * **HTML Summary**: Saved under `reports/` with rich metrics visualization charts.
 * **Excel Metrics**: Detailed transaction logs saved under `reports/` for spreadsheet analysis.
 * **Functional Regression Reports**: Saved under `reports/functional-regression/` and kept separate from stress metrics.

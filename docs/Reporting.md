@@ -13,6 +13,23 @@ The Live Dashboard exposes real-time execution statistics via WebSockets. It is 
 * **Heap Memory Graph**: Displays target application memory consumption over time.
 * **System Event Logs**: Reconnect events, watchdog triggers, and session rebuilding warnings.
 
+### 1.1.1 Status Lifecycle
+The Status card shows the real run state, not the connection state:
+
+| Status | Meaning | Colour |
+|---|---|---|
+| `STARTING` | Dashboard is up; setup (onboarding, PIN, hierarchy, POS entry) is still running | amber |
+| `RUNNING` | The order loop has begun | blue |
+| `SUCCESS` | Run finished with no failed cycles | green |
+| `PARTIAL` | Run finished, some cycles completed and some failed | amber |
+| `FAILED` | Fatal error, or no cycle completed and at least one failed | red |
+
+* **Success Rate** shows `No orders yet` (neutral) until at least one cycle has completed or failed. After that it shows `completed / (completed + failed)`.
+* **Elapsed / Remaining** tick live in the browser. Remaining is `N/A` until the order loop starts and always `N/A` in cycles mode.
+* **Current Cycle** keeps the last real cycle number when the final or fatal update arrives.
+* **Event feed** receives the explicit dashboard events plus existing startup log lines (`ONBOARDING`, `LOGIN`, `HIERARCHY`, `POS_MENU`, `STATE`, `POPUP`, `Starting Cycle`, startup retry errors). The hook is `setEventSink` in `utils/logger.js`; it never affects logging.
+* `live_state.json` in the run folder stores the same metrics and events.
+
 ### 1.2 Configuration
 The dashboard is controlled via `config.json` parameters:
 * `liveDashboardEnabled`: `true` or `false` to turn the server on/off.
